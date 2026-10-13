@@ -1,0 +1,423 @@
+import { Home } from './Home'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  Activity, ArrowRight, ArrowUpRight, ArrowUpRightFromSquare, Check, Moon, Sun,
+  CircleHelp, Coins, Command, Fingerprint, LoaderCircle, Network, RefreshCw,
+  FileCheck2, ScanLine, Search, Star, Trophy, Wallet, X,
+} from 'lucide-react'
+import { ExactEvmScheme } from '@x402/evm'
+import { x402Client } from '@x402/core/client'
+import { decodePaymentResponseHeader, wrapFetchWithPayment } from '@x402/fetch'
+import { connectWallet, loadAgents, registerAgent, submitFeedback, usdcAddress, type Agent } from './chain'
+import { useWalletSession } from './wallet'
+
+type AgentEndpoint = {
+  name?: string
+  endpoint?: string
+  url?: string
+  skills?: unknown[]
+  pricing?: { amount?: string; currency?: string; network?: string }
+}
+
+type HireResult = {
+  agent: Agent
+  endpoint: string
+  result: unknown
+  paymentTx?: string
+  feedbackTx?: string
+}
+
+const explorer = 'https://testnet.monadscan.com'
+const identityRegistry = '0x8004A818BFB912233c491871b3d84c89A494BD9e'
+const agentSnapshotKey = 'gentry:monad-testnet:agents:v2'
+
+type Route = 'home' | 'market' | 'workspaces' | 'signals' | 'reputation' | 'publish' | 'profile'
+type Market = { id: number; symbol: string; name: string; mark: number; previous: number; changePct: number; fundingRate: number; open: boolean; updatedAt?: number }
+
+function routeFromHash(hash: string): Route {
+  const value = hash.replace('#', '')
+  if (value === 'network' || value === 'market') return 'market'
+  if (value === 'workspaces') return 'workspaces'
+  if (value === 'signals' || value === 'markets') return 'signals'
+  if (value.startsWith('agent-')) return 'profile'
+  if (value === 'leaderboard' || value === 'reputation') return 'reputation'
+  if (value === 'builders' || value === 'publish') return 'publish'
+  return 'home'
+}
+
+function endpointsOf(agent: Agent): AgentEndpoint[] {
+  if (agent.card?.x402Support === false || !Array.isArray(agent.card?.endpoints)) return []
+  return agent.card.endpoints.filter((item: AgentEndpoint) => item && typeof (item.endpoint || item.url) === 'string')
+}
+
+function hasProtectedService(agent: Agent) {
+  return agent.card?.x402Support === false && Array.isArray(agent.card?.services) && agent.card.services.some((service: any) =>
+    service && typeof service.endpoint === 'string' && /^https?:\/\//i.test(service.endpoint),
+  )
+}
+
+function capabilityNames(agent: Agent): string[] {
+  const endpointSkills = Array.isArray(agent.card?.endpoints)
+    ? agent.card.endpoints.flatMap((endpoint: any) => Array.isArray(endpoint?.skills) ? endpoint.skills : [])
+    : []
+  const source = agent.card?.capabilities || agent.card?.skills || []
+  const values = [...(Array.isArray(source) ? source : []), ...endpointSkills]
+  return [...new Set(values.map((item: any) => typeof item === 'string' ? item : item?.name || item?.id)
+    .filter((item: unknown): item is string => typeof item === 'string' && item.trim().length > 0))]
+}
+
+function readSnapshot(): Agent[] {
+  try {
+    const rows = JSON.parse(localStorage.getItem(agentSnapshotKey) || '[]')
+    if (!Array.isArray(rows)) return []
+    return rows.map((row: any) => ({
+      ...row, id: BigInt(row.id),
+      summary: row.summary ? { ...row.summary, count: BigInt(row.summary.count), value: BigInt(row.summary.value) } : undefined,
+    }))
+  } catch { return [] }
+}
+
+function scoreOf(agent: Agent) {
+  if (!agent.summary) return null
+  return (Number(agent.summary.value) / (10 ** agent.summary.decimals)).toFixed(agent.summary.decimals)
+}
+
+function paymentOf(agent: Agent, endpoint?: AgentEndpoint) {
+  const payment = endpoint?.pricing || agent.card?.payment
+  if (!payment?.amount) return null
+  return `${payment.amount} ${payment.currency || 'USDC'}`
+}
+
+function shortAddress(value?: string) {
+  return value ? `${value.slice(0, 6)}…${value.slice(-4)}` : ''
+}
+
+function logoOf(agent: Agent) {
+  const value = agent.card?.image || agent.card?.logo || agent.card?.icon || agent.card?.avatar
+  if (typeof value !== 'string' || !value.trim()) return ''
+  if (value.startsWith('ipfs://')) return `https://ipfs.io/ipfs/${value.slice(7)}`
+  if (value.startsWith('ar://')) return `https://arweave.net/${value.slice(5)}`
+  return value
+}
+
+function AgentAvatar({ agent, large = false }: { agent: Agent; large?: boolean }) {
+  const src = logoOf(agent)
+  const [failed, setFailed] = useState(false)
+  return <div className={`agent-avatar${large ? ' large' : ''}${src && !failed ? ' has-logo' : ''}`}>
+    {src && !failed ? <img src={src} alt={`${agent.card?.name || 'Agent'} logo`} onError={() => setFailed(true)} /> : String(agent.card?.name || '?').slice(0, 1)}
+  </div>
+}
+
+function needsAddress(name?: string) {
+  const value = name?.toLowerCase() || ''
+  return value.includes('address') || value.includes('token')
+}
+
+function needsHash(name?: string) {
+  const value = name?.toLowerCase() || ''
+  return value.includes('transaction') || value.includes('receipt')
+}
+
+function ResultView({ value }: { value: unknown }) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return <pre className="result-raw">{String(value)}</pre>
+  const entries = Object.entries(value as Record<string, unknown>)
+  return <div className="result-grid">{entries.map(([key, item]) => <div className="result-item" key={key}>
+    <span>{key.replace(/([A-Z])/g, ' $1').replace(/^./, (letter) => letter.toUpperCase())}</span>
+    <strong>{typeof item === 'boolean' ? (item ? 'Yes' : 'No') : String(item)}</strong>
+  </div>)}</div>
+}
+
+export default function App() {
+  const { address: connectedAddress, provider: walletProvider, ready: walletReady, openWallet } = useWalletSession()
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    try { const saved = localStorage.getItem('gentry:theme'); if (saved === 'dark' || saved === 'light') return saved } catch { /* Storage may be restricted. */ }
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+  })
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#111a16' : '#f7f8f2')
+    try { localStorage.setItem('gentry:theme', theme) } catch { /* Theme still works without persistence. */ }
+  }, [theme])
+  const snapshot = useRef(readSnapshot())
+  const [route, setRoute] = useState<Route>(() => routeFromHash(window.location.hash))
+  const [agents, setAgents] = useState<Agent[]>(snapshot.current)
+  const [loading, setLoading] = useState(snapshot.current.length === 0)
+  const [refreshing, setRefreshing] = useState(false)
+  const [error, setError] = useState('')
+  const [query, setQuery] = useState('')
+  const [filter, setFilter] = useState<'all' | 'payable' | 'services'>('payable')
+  const [walletAddress, setWalletAddress] = useState('')
+  useEffect(() => { setWalletAddress(connectedAddress || '') }, [connectedAddress])
+  const [selected, setSelected] = useState<Agent | null>(null)
+  const [hireRequest, setHireRequest] = useState<{ agent: Agent; endpoint: AgentEndpoint } | null>(null)
+  const [hireInput, setHireInput] = useState('')
+  const [hireResult, setHireResult] = useState<HireResult | null>(null)
+  const [rating, setRating] = useState<number | ''>('')
+  const [feedbackDone, setFeedbackDone] = useState(false)
+  const [showRegister, setShowRegister] = useState(false)
+  const [metadataUri, setMetadataUri] = useState('')
+  const [busy, setBusy] = useState<string | null>(null)
+  const [notice, setNotice] = useState('')
+  const [markets, setMarkets] = useState<Market[]>([])
+  const [marketsLoading, setMarketsLoading] = useState(false)
+  const [marketsError, setMarketsError] = useState('')
+  const [marketsUpdatedAt, setMarketsUpdatedAt] = useState<number | null>(null)
+
+  useEffect(() => {
+    const onHashChange = () => setRoute(routeFromHash(window.location.hash))
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+
+  useEffect(() => { window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior }) }, [route])
+
+  useEffect(() => {
+    if (route !== 'profile') { setSelected(null); return }
+    const value = window.location.hash.replace('#agent-', '')
+    const agent = agents.find((item) => item.id.toString() === value)
+    if (agent) setSelected(agent)
+  }, [agents, route])
+
+  const refresh = useCallback(async () => {
+    setRefreshing(true); setError('')
+    try {
+      const latest = await loadAgents()
+      setAgents(latest)
+      if (latest.length) {
+        snapshot.current = latest
+        localStorage.setItem(agentSnapshotKey, JSON.stringify(latest, (_key, value) => typeof value === 'bigint' ? value.toString() : value))
+      }
+    } catch {
+      if (!snapshot.current.length) setError('Agent information is unavailable right now. Please try again.')
+    } finally { setLoading(false); setRefreshing(false) }
+  }, [])
+
+  useEffect(() => { void refresh() }, [refresh])
+
+  useEffect(() => {
+    if (route !== 'signals') return
+    let active = true
+    let first = true
+    const load = async () => {
+      if (first && markets.length === 0) setMarketsLoading(true)
+      try {
+        const response = await fetch(`/api/markets?view=signals&ts=${Date.now()}`, { cache: 'no-store', signal: AbortSignal.timeout(12000) })
+        if (!response.ok) throw new Error('Market request failed')
+        const payload = await response.json()
+        const rows = Array.isArray(payload.markets) ? payload.markets.filter((item: Market) => Number.isFinite(item.mark) && item.mark > 0) : []
+        if (!rows.length) throw new Error('No current markets')
+        if (active) { setMarkets(rows); setMarketsError(''); setMarketsUpdatedAt(Date.now()) }
+      } catch {
+        if (active) setMarketsError('Could not load live prices. We’ll keep trying automatically.')
+      } finally {
+        if (active && first) { setMarketsLoading(false); first = false }
+      }
+    }
+    void load()
+    const timer = window.setInterval(() => { void load() }, 15000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [route])
+
+  const filtered = useMemo(() => agents.filter((agent) => {
+    if (filter === 'payable' && !endpointsOf(agent).length) return false
+    if (filter === 'services' && !endpointsOf(agent).length && !hasProtectedService(agent)) return false
+    const term = query.trim().toLowerCase()
+    return !term || [agent.card?.name, agent.card?.description, ...capabilityNames(agent)]
+      .some((value) => String(value || '').toLowerCase().includes(term))
+  }), [agents, filter, query])
+
+  const payableCount = agents.filter((agent) => endpointsOf(agent).length > 0).length
+  const feedbackCount = agents.reduce((total, agent) => total + Number(agent.summary?.count || 0n), 0)
+  const featured = agents.find((agent) => endpointsOf(agent).length > 0)
+  const leaderboard = useMemo(() => [...agents].filter((agent) => agent.summary).sort((a, b) => {
+    const scoreDifference = Number(scoreOf(b)) - Number(scoreOf(a))
+    return scoreDifference || Number((b.summary?.count || 0n) - (a.summary?.count || 0n))
+  }).slice(0, 5), [agents])
+
+  function openWorkspace(kind: 'address' | 'token' | 'transaction') {
+    if (!featured) return setNotice('No payable intelligence agent is available right now.')
+    const endpoint = endpointsOf(featured).find((item) => item.name?.toLowerCase().includes(kind))
+    if (!endpoint) return setNotice(`The ${kind} workspace is not available yet.`)
+    setHireRequest({ agent: featured, endpoint }); setHireInput('')
+  }
+
+  function openAgent(agent: Agent) {
+    window.location.hash = `agent-${agent.id.toString()}`
+    setSelected(agent)
+  }
+
+  function closeAgent() {
+    setSelected(null)
+    if (route === 'profile') window.location.hash = 'network'
+  }
+
+  function requestSignal(market: Market) {
+    if (!featured) return setNotice('No payable agent is available for this request right now.')
+    const endpoint = endpointsOf(featured).find((item) => /research|signal|analysis|market/i.test(item.name || ''))
+    if (!endpoint) return setNotice('No payable agent is available for this request right now.')
+    setHireRequest({ agent: featured, endpoint })
+    setHireInput(`Analyze ${market.symbol} Perp on Monad Testnet. Review the live mark price, movement, funding, and risk considerations.`)
+  }
+
+  async function onConnect() {
+    if (!connectedAddress) {
+      if (!walletReady) return setNotice('Wallet connection is being set up. Please try again soon.')
+      try { await openWallet() } catch { setNotice('Wallet connection was cancelled.') }
+      return
+    }
+    try { setWalletAddress((await connectWallet(walletProvider, connectedAddress)).address) }
+    catch { setNotice('Switch to Monad Testnet in your wallet and try again.') }
+  }
+
+  async function hire(event: React.FormEvent) {
+    event.preventDefault()
+    if (!hireRequest) return
+    const { agent, endpoint } = hireRequest
+    const url = endpoint.endpoint || endpoint.url || ''
+    const input = hireInput.trim()
+    const addressRequest = needsAddress(endpoint.name)
+    const hashRequest = needsHash(endpoint.name)
+    if (addressRequest && !/^0x[a-fA-F0-9]{40}$/.test(input)) return setNotice('Enter a valid Monad address. No payment was requested.')
+    if (hashRequest && !/^0x[a-fA-F0-9]{64}$/.test(input)) return setNotice('Enter a valid Monad transaction hash. No payment was requested.')
+    if (!input) return
+    setBusy('hire'); setNotice(''); setFeedbackDone(false)
+    try {
+      if (!connectedAddress) { await openWallet(); return }
+      const { address, wallet } = await connectWallet(walletProvider, connectedAddress)
+      setWalletAddress(address)
+      const signer = {
+        address,
+        signTypedData: async (message: any) => wallet.signTypedData({
+          account: address, domain: message.domain, types: message.types,
+          primaryType: message.primaryType, message: message.message,
+        } as any),
+      }
+      const client = new x402Client().register('eip155:10143', new ExactEvmScheme(signer as any))
+        .registerPolicy((_version, requirements) => requirements.filter((requirement) =>
+          requirement.scheme === 'exact' && requirement.network === 'eip155:10143' &&
+          requirement.asset.toLowerCase() === usdcAddress.toLowerCase(),
+        ))
+      const response = await wrapFetchWithPayment(fetch, client)(url, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ task: input }),
+      })
+      if (!response.ok) throw new Error(`request ${response.status}`)
+      const receipt = response.headers.get('payment-response') || response.headers.get('x-payment-response')
+      if (!receipt) throw new Error('missing settlement')
+      const settlement = decodePaymentResponseHeader(receipt) as any
+      if (!settlement.success || settlement.network !== 'eip155:10143') throw new Error('unconfirmed settlement')
+      const text = await response.text()
+      let result: unknown = text
+      try { result = JSON.parse(text) } catch { /* Plain text responses remain readable. */ }
+      setHireResult({ agent, endpoint: url, result, paymentTx: settlement.transaction || settlement.txHash })
+      setHireRequest(null); setSelected(null); setHireInput('')
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message.toLowerCase() : ''
+      setNotice(message.includes('user rejected') || message.includes('user denied') ? 'Payment was cancelled.' : 'The request could not be completed. Please try again.')
+    } finally { setBusy(null) }
+  }
+
+  async function sendFeedback() {
+    if (!hireResult || rating === '') return
+    setBusy('feedback'); setNotice('')
+    try {
+      const feedbackTx = await submitFeedback(hireResult.agent, rating, hireResult.endpoint, walletProvider, connectedAddress)
+      setHireResult({ ...hireResult, feedbackTx })
+      setFeedbackDone(true)
+      setNotice('Feedback recorded on Monad Testnet.')
+      void refresh()
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message : ''
+      setNotice(message || 'Your feedback could not be saved. Please try again.')
+    }
+    finally { setBusy(null) }
+  }
+
+  async function onRegister(event: React.FormEvent) {
+    event.preventDefault(); setBusy('register'); setNotice('')
+    try {
+      const hash = await registerAgent(metadataUri.trim(), walletProvider, connectedAddress)
+      setNotice(`Agent registered. Transaction ${shortAddress(hash)}`)
+      setMetadataUri(''); setShowRegister(false); void refresh()
+    } catch { setNotice('Your agent could not be registered. Please try again.') }
+    finally { setBusy(null) }
+  }
+
+  return <div className="app-shell" id="top">
+    <a className="skip-link" href="#main-content">Skip to content</a><header className="topbar">
+      <a className="brand" href="#top"><span className="brand-mark"><Command size={18} strokeWidth={2.5} /></span><span>GentrY</span></a>
+      <nav><a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a><a className={route === 'workspaces' ? 'active' : ''} href="#workspaces">Workspaces</a><a className={route === 'market' ? 'active' : ''} href="#network">Agents</a><a className={route === 'reputation' ? 'active' : ''} href="#leaderboard">Reputation</a></nav>
+      <div className="top-actions"><button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button><button className="wallet-button" aria-label={walletAddress ? `Connected wallet ${walletAddress}` : 'Connect wallet'} onClick={() => void onConnect()}><Wallet size={15} />{walletAddress ? shortAddress(walletAddress) : 'Connect'}</button></div>
+    </header>
+
+    <main className={route === 'home' ? 'home-main' : 'app-main'} id="main-content">
+      {route === 'home' && <Home agents={agents.length} available={payableCount} reviews={feedbackCount} loading={loading} onPublish={() => setShowRegister(true)} />}
+
+      {route === 'workspaces' && <section className="workspace-section" id="workspaces">
+        <div className="workspace-heading"><div><span>LIVE USE CASES</span><h2>Start with a financial question.</h2><p>Choose a task, review the price, and get an answer with a payment receipt.</p></div><Activity size={34} /></div>
+        <div className="workspace-grid">
+          <article className="workspace-card wallet-workspace"><div className="workspace-icon"><ScanLine size={23} /></div><span>WALLET DUE DILIGENCE</span><h3>Know what an address is before you act.</h3><p>Check live MON balance, account type, contract status, and the exact block used for the result.</p><ul><li>Current wallet information</li><li>A clear, readable result</li><li>Reviews from past work</li></ul><button onClick={() => openWorkspace('address')}>Inspect a wallet <ArrowRight size={16} /></button></article>
+          <article className="workspace-card token-workspace"><div className="workspace-icon"><Coins size={23} /></div><span>TOKEN DUE DILIGENCE</span><h3>Verify a token contract and its supply.</h3><p>Read the token name, symbol, decimals, total supply, and confirmation block directly from Monad.</p><ul><li>Checked before payment</li><li>Current token information</li><li>Payment and feedback proof</li></ul><button onClick={() => openWorkspace('token')}>Inspect a token <ArrowRight size={16} /></button></article>
+          <article className="workspace-card transaction-workspace"><div className="workspace-icon"><FileCheck2 size={23} /></div><span>TRANSACTION VERIFICATION</span><h3>Confirm what actually settled.</h3><p>Read the sender, recipient, value, status, block, and gas used from a Monad receipt.</p><ul><li>Checked before payment</li><li>Settlement status</li><li>A record you can verify</li></ul><button onClick={() => openWorkspace('transaction')}>Verify a transaction <ArrowRight size={16} /></button></article>
+          <aside className="workspace-rail"><span>HOW A JOB MOVES</span>{[['01', 'Choose a live task'], ['02', 'Review and approve the price'], ['03', 'Receive your result'], ['04', 'Leave a review']].map(([number, label]) => <div key={number}><b>{number}</b><p>{label}</p></div>)}</aside>
+        </div>
+      </section>}
+
+      {route === 'signals' && <section className="signals-section" id="signals">
+        <div className="workspace-heading"><div><span>LIVE MARKET SIGNALS</span><h2>See what is moving.</h2><p>Follow prices and market changes. Choose a market to get a closer look.</p></div><Activity size={34} /></div>
+        {marketsError && markets.length === 0 && <div className="state-panel"><CircleHelp size={20} /><div><strong>Prices are taking a moment</strong><p>{marketsError}</p></div></div>}
+        {marketsLoading && markets.length === 0 && <div className="signal-grid skeleton-grid">{[0, 1, 2].map((item) => <div className="signal-card skeleton" key={item} />)}</div>}
+        {markets.length > 0 && <><div className="signal-feed-status"><span><i /> Live market data</span><span>{marketsUpdatedAt ? `Updated ${new Date(marketsUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : ''}{marketsError ? ' · reconnecting' : ''}</span></div><div className="signal-grid">{markets.map((market) => <article className="signal-card" key={market.id}><div className="signal-card-top"><span>{market.symbol} / AUSD</span><span className={market.changePct >= 0 ? 'signal-up' : 'signal-down'}>{market.changePct >= 0 ? '+' : ''}{market.changePct.toFixed(2)}%</span></div><h3>${market.mark.toLocaleString(undefined, { maximumFractionDigits: 6 })}</h3><div className="signal-meta"><span>Mark price</span><span>Perpl</span></div><div className="signal-observed">{market.updatedAt ? `Updated ${new Date(market.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Update time unavailable'}</div><div className="signal-actions"><button onClick={() => requestSignal(market)}>Ask an agent <ArrowRight size={14} /></button><a href="https://testnet.perpl.xyz" target="_blank" rel="noreferrer">Open market <ArrowUpRight size={14} /></a></div></article>)}</div></>}
+      </section>}
+
+      {(route === 'market' || route === 'profile') && <section className="market" id="network">
+        <div className="market-heading"><div><span>LIVE MARKETPLACE</span><h2>Find the right agent.</h2></div><button className="refresh-button" disabled={refreshing} onClick={() => void refresh()}>{refreshing ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />} Refresh</button></div>
+        <div className="market-tools"><label><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search names, skills, or capabilities" /></label><div className="filter-tabs">{(['payable', 'all', 'services'] as const).map((value) => <button key={value} className={filter === value ? 'active' : ''} onClick={() => setFilter(value)}>{value === 'all' ? 'All profiles' : value === 'payable' ? 'Ready to hire' : 'Access required'}</button>)}</div></div>
+
+        {error && <div className="state-panel"><CircleHelp size={20} /><div><strong>Agents could not be loaded</strong><p>{error}</p></div></div>}
+        {!error && loading && <div className="agent-grid skeleton-grid">{[0, 1, 2].map((item) => <div className="agent-card skeleton" key={item} />)}</div>}
+        {!error && !loading && filtered.length === 0 && <div className="state-panel"><Network size={20} /><div><strong>No matching agents</strong><p>Try another search or filter.</p></div></div>}
+        {!error && !loading && filtered.length > 0 && <div className="agent-grid">{filtered.map((agent) => {
+          const endpoint = endpointsOf(agent)[0]
+          const score = scoreOf(agent)
+          return <article className="agent-card" key={agent.id.toString()} onClick={() => openAgent(agent)}>
+            <div className="card-top"><AgentAvatar agent={agent} /><span className={endpoint ? 'available-pill' : 'listed-pill'}><i /> {endpoint ? 'Ready to hire' : hasProtectedService(agent) ? 'Access required' : 'Profile only'}</span></div>
+            <div className="agent-number">AGENT #{agent.id.toString()}</div><h3>{agent.card?.name}</h3><p>{agent.card?.description || 'No description published.'}</p>
+            <div className="card-tags">{capabilityNames(agent).slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}</div>
+            <div className="card-metrics"><div><span>Reputation</span><strong>{score ? `${score} / 5` : 'No reviews'}</strong></div><div><span>Service</span><strong>{endpoint ? paymentOf(agent, endpoint) || 'Price at checkout' : hasProtectedService(agent) ? 'Access required' : 'Profile only'}</strong></div></div>
+            <button className="open-agent" onClick={(event) => { event.stopPropagation(); openAgent(agent) }}>View agent <ArrowRight size={15} /></button>
+          </article>
+        })}</div>}
+      </section>}
+
+      {route === 'reputation' && <section className="leaderboard-section" id="leaderboard"><div className="leaderboard-copy"><span>AGENT REVIEWS</span><h2>Trust, built through work.</h2><p>Explore the feedback recorded for agents in the network.</p><a href={`${explorer}/address/${identityRegistry}`} target="_blank" rel="noreferrer">View public records <ArrowUpRight size={13} /></a></div>{leaderboard.length > 0 ? <div className="leaderboard-list"><div className="leaderboard-head"><span>Rank / agent</span><span>Reviews</span><span>Score</span></div>{leaderboard.map((agent, index) => <button key={agent.id.toString()} onClick={() => openAgent(agent)}><b>{String(index + 1).padStart(2, '0')}</b><div className="mini-avatar">{String(agent.card?.name || '?').slice(0, 1)}</div><div><strong>{agent.card?.name}</strong><small>Agent #{agent.id.toString()}</small></div><span>{agent.summary?.count.toString()}</span><em><Trophy size={13} /> {scoreOf(agent)}</em></button>)}</div> : <div className="state-panel"><Star size={20} /><div><strong>{loading ? 'Loading reviews' : 'No reviews yet'}</strong><p>{loading ? 'Checking agent feedback.' : 'Reviews will appear as people complete tasks and share their experience.'}</p></div></div>}</section>}
+
+      {route === 'publish' && <section className="builder-section" id="builders"><div><span>PUT YOUR SKILLS TO WORK</span><h2>Bring your own agent.</h2><p>Give your agent a profile, publish its services, and make it easy for people to find and hire.</p></div><div className="builder-actions"><button className="primary-button" onClick={() => setShowRegister(true)}>Register an agent <ArrowRight size={17} /></button><a href="https://docs.monad.xyz/guides/erc-8004" target="_blank" rel="noreferrer">Publishing guide <ArrowUpRightFromSquare size={14} /></a></div></section>}
+    </main>
+
+    <footer className="site-footer">
+      <div className="footer-upper"><div className="footer-about"><a className="brand" href="#top"><span className="brand-mark"><Command size={18} strokeWidth={2.5} /></span><span>GentrY</span></a><p>Good questions.<br />Better connections.</p><span>Financial agents, working for you.</span></div>
+      <div className="footer-links"><strong>Explore</strong><a href="#signals">Signals</a><a href="#workspaces">Workspaces</a><a href="#network">Find an agent</a><a href="#leaderboard">Reputation</a></div>
+      <div className="footer-links"><strong>Create</strong><a href="#builders">Publish an agent</a><a href="https://github.com/Datwebguy/gentryworld" target="_blank" rel="noreferrer">GitHub <ArrowUpRight size={12} /></a><a href="https://monad.xyz" target="_blank" rel="noreferrer">Built on Monad <ArrowUpRight size={12} /></a></div>
+      </div><div className="footer-bottom"><span>GentrY. Open collaboration, real work.</span><span className="network-badge"><i /> Monad Testnet</span><a href="#top">Back to home <ArrowUpRight size={14} /></a></div>
+    </footer>
+
+    {notice && <div className="toast" role="status"><span>{notice}</span><button onClick={() => setNotice('')}><X size={15} /></button></div>}
+
+    {selected && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeAgent() }}><section className="agent-drawer">
+      <button className="close-button" aria-label="Close agent" onClick={closeAgent}><X size={19} /></button>
+      <div className="drawer-head"><AgentAvatar agent={selected} large /><div><span>AGENT #{selected.id.toString()}</span><h2>{selected.card?.name}</h2></div></div>
+      <p className="drawer-description">{selected.card?.description || 'No description published.'}</p>
+      <div className="identity-panel"><div><Fingerprint size={17} /><span>Verified identity</span></div><strong>{shortAddress(selected.owner)}</strong><a href={`${explorer}/token/${identityRegistry}?a=${selected.id}`} target="_blank" rel="noreferrer">View public record <ArrowUpRight size={13} /></a></div>
+      <div className="drawer-section"><span>SKILLS</span><div className="drawer-tags">{capabilityNames(selected).map((tag) => <span key={tag}>{tag}</span>)}</div></div>
+      <div className="drawer-section"><span>REPUTATION</span><div className="reputation-box"><Star size={20} /><strong>{scoreOf(selected) || '—'}</strong><p>{selected.summary ? `${selected.summary.count.toString()} recorded review${selected.summary.count === 1n ? '' : 's'}` : 'No feedback has been recorded yet.'}</p></div></div>
+      <div className="drawer-section"><span>SERVICES</span>{endpointsOf(selected).length ? endpointsOf(selected).map((endpoint, index) => <div className="service-row" key={endpoint.endpoint || endpoint.url || index}><div><strong>{endpoint.name || 'Hire agent'}</strong><small>Review the price before you pay</small></div><div><b>{paymentOf(selected, endpoint) || 'Price at checkout'}</b><button onClick={() => { setHireRequest({ agent: selected, endpoint }); setHireInput('') }}>Hire <ArrowRight size={14} /></button></div></div>) : <div className="service-empty">{hasProtectedService(selected) ? 'This provider requires access before its service can be used.' : 'This profile has not published a payable service.'}</div>}</div>
+      <a className="profile-link" href={selected.uri.startsWith('ipfs://') ? `https://ipfs.io/ipfs/${selected.uri.slice(7)}` : selected.uri} target="_blank" rel="noreferrer">Open published profile <ArrowUpRightFromSquare size={14} /></a>
+    </section></div>}
+
+    {hireRequest && <div className="modal-backdrop"><section className="modal hire-modal"><button className="close-button" disabled={busy !== null} onClick={() => setHireRequest(null)}><X size={19} /></button><span className="modal-kicker">PAID REQUEST</span><h2>{hireRequest.endpoint.name || `Hire ${hireRequest.agent.card?.name}`}</h2><p>{hireRequest.endpoint.name?.toLowerCase().includes('token') ? 'Enter a Monad token contract. The agent will verify it before requesting payment, then return live supply information.' : needsAddress(hireRequest.endpoint.name) ? 'Enter a Monad address. The agent will return its live balance and contract status.' : `Describe the work for ${hireRequest.agent.card?.name}.`}</p><form onSubmit={(event) => void hire(event)}><label htmlFor="hire-input">{needsAddress(hireRequest.endpoint.name) ? 'Monad address' : 'Your request'}</label><input id="hire-input" value={hireInput} onChange={(event) => setHireInput(event.target.value)} placeholder={needsAddress(hireRequest.endpoint.name) ? '0x…' : 'What should the agent do?'} autoFocus required /><div className="payment-summary"><div><Coins size={17} /><span>Payment</span></div><strong>{paymentOf(hireRequest.agent, hireRequest.endpoint) || 'Shown by your wallet'}</strong></div><button className="primary-button wide" disabled={busy !== null || !hireInput.trim()}>{busy === 'hire' ? <LoaderCircle className="spin" size={16} /> : <Wallet size={16} />} Review and pay</button></form></section></div>}
+
+    {hireResult && <div className="modal-backdrop"><section className="modal result-modal"><button className="close-button" onClick={() => setHireResult(null)}><X size={19} /></button><div className="success-icon"><Check size={23} /></div><span className="modal-kicker">WORK DELIVERED</span><h2>Request complete.</h2><p>{hireResult.agent.card?.name} returned a result after the payment settled.</p><ResultView value={hireResult.result} />{hireResult.paymentTx && <a className="proof-link" href={`${explorer}/tx/${hireResult.paymentTx}`} target="_blank" rel="noreferrer"><Check size={14} /> Payment confirmed on Monad <ArrowUpRight size={13} /></a>}{!feedbackDone ? <div className="feedback-box"><div><strong>How was the result?</strong><span>Your review helps others choose the right agent.</span></div><div className="stars">{[1, 2, 3, 4, 5].map((value) => <button key={value} className={rating && value <= rating ? 'active' : ''} onClick={() => setRating(value)} aria-label={`${value} stars`}><Star size={21} fill="currentColor" /></button>)}</div><button className="primary-button wide" disabled={rating === '' || busy !== null} onClick={() => void sendFeedback()}>{busy === 'feedback' ? <LoaderCircle className="spin" size={16} /> : null}Record feedback</button></div> : <div className="feedback-complete"><Check size={17} /><div><strong>Reputation updated</strong>{hireResult.feedbackTx && <a href={`${explorer}/tx/${hireResult.feedbackTx}`} target="_blank" rel="noreferrer">View transaction <ArrowUpRight size={12} /></a>}</div></div>}</section></div>}
+
+    {showRegister && <div className="modal-backdrop"><section className="modal"><button className="close-button" onClick={() => setShowRegister(false)}><X size={19} /></button><span className="modal-kicker">PUBLISH AN AGENT</span><h2>Join the network.</h2><p>Provide a public profile containing the agent’s name, description, capabilities, and available services.</p><form onSubmit={(event) => void onRegister(event)}><label htmlFor="profile-uri">Profile link</label><input id="profile-uri" type="url" value={metadataUri} onChange={(event) => setMetadataUri(event.target.value)} placeholder="https://…" required /><div className="identity-note"><Fingerprint size={18} /><span>Approve registration in your wallet to publish your agent.</span></div><button className="primary-button wide" disabled={!metadataUri.trim() || busy !== null}>{busy === 'register' ? <LoaderCircle className="spin" size={16} /> : <Wallet size={16} />}Connect and register</button></form></section></div>}
+  </div>
+}

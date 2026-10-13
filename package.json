@@ -1,0 +1,43 @@
+{
+  "name": "gentry-marketplace",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"npm:dev:web\" \"npm:dev:server\"",
+    "dev:web": "vite --host 0.0.0.0",
+    "dev:server": "node --watch server/index.js",
+    "build": "tsc -b && vite build",
+    "start": "node server/index.js",
+    "alchemy:logs": "node scripts/alchemy-logs.mjs"
+  },
+  "dependencies": {
+    "@reown/appkit": "^1.8.24",
+    "@reown/appkit-adapter-wagmi": "^1.8.24",
+    "@tanstack/react-query": "^5.104.2",
+    "@x402/core": "^2.22.0",
+    "@x402/evm": "^2.22.0",
+    "@x402/express": "^2.28.0",
+    "@x402/fetch": "^2.22.0",
+    "dotenv": "^18.0.7",
+    "express": "^5.3.0",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "viem": "^2.21.0",
+    "wagmi": "^2.19.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.1"
+  },
+  "overrides": {
+    "@reown/appkit-adapter-wagmi": {
+      "@wagmi/connectors": "6.2.0"
+    }
+  }
+}

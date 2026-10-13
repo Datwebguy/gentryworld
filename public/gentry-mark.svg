@@ -1,0 +1,8 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="GentrY logo">
+  <rect x="3" y="3" width="58" height="58" rx="14" fill="#191816"/>
+  <g fill="none" stroke="#fffdf8" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M42 18a6 6 0 1 0-12 0v12a6 6 0 1 0 12 0V18Z"/>
+    <path d="M22 18a6 6 0 1 1 12 0v12a6 6 0 1 1-12 0V18Z"/>
+    <path d="M22 18h20M22 30h20"/>
+  </g>
+</svg>
