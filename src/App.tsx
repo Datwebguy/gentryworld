@@ -1,5 +1,6 @@
 import { Home } from './Home'
 import { CopyTerminal } from './CopyTerminal'
+import { PerplTrader } from './PerplTrader'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, ArrowRight, ArrowUpRight, ArrowUpRightFromSquare, Check, Moon, Sun,
@@ -33,7 +34,7 @@ const identityRegistry = '0x8004A818BFB912233c491871b3d84c89A494BD9e'
 const agentSnapshotKey = 'gentry:monad-testnet:agents:v2'
 
 type Route = 'home' | 'market' | 'workspaces' | 'signals' | 'reputation' | 'publish' | 'profile' | 'copy-trading'
-type Market = { id: number; symbol: string; name: string; mark: number; previous: number; changePct: number; fundingRate: number; open: boolean; updatedAt?: number }
+type Market = { id: number; symbol: string; name: string; mark: number; previous: number; changePct: number; fundingRate: number; open: boolean; updatedAt?: number; sizeDecimals?: number; priceDecimals?: number; maxLeverage?: number | null; maxSlippageBps?: number }
 
 function routeFromHash(hash: string): Route {
   const value = hash.replace('#', '')
@@ -179,6 +180,7 @@ export default function App() {
   const [marketsUpdatedAt, setMarketsUpdatedAt] = useState<number | null>(null)
   const [marketsStale, setMarketsStale] = useState(false)
   const [marketsRetry, setMarketsRetry] = useState(0)
+  const [tradeMarket, setTradeMarket] = useState<Market | null>(null)
 
   useEffect(() => {
     const onHashChange = () => setRoute(routeFromHash(window.location.hash))
@@ -393,7 +395,7 @@ export default function App() {
         <div className="workspace-heading"><div><span>LIVE MARKET SIGNALS</span><h2>See what is moving.</h2><p>Follow prices and market changes. Choose a market to get a closer look.</p></div><button className="refresh-button" disabled={marketsLoading} onClick={() => setMarketsRetry((value) => value + 1)}>{marketsLoading ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}Refresh</button></div>
         {marketsError && markets.length === 0 && <div className="state-panel"><CircleHelp size={20} /><div><strong>Prices are taking a moment</strong><p>{marketsError}</p><button className="text-button" onClick={() => setMarketsRetry((value) => value + 1)}>Try again <ArrowRight size={14} /></button></div></div>}
         {marketsLoading && markets.length === 0 && <div className="signal-grid skeleton-grid">{[0, 1, 2].map((item) => <div className="signal-card skeleton" key={item} />)}</div>}
-        {markets.length > 0 && <><div className="signal-feed-status"><span><i /> {marketsStale ? 'Showing last received prices' : 'Live Monad Testnet prices'}</span><span>{marketsUpdatedAt ? `Received ${new Date(marketsUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : ''}{marketsError ? ' · reconnecting' : ''}</span></div><div className="signal-grid">{markets.map((market) => <article className="signal-card" key={market.id}><div className="signal-card-top"><span>{market.symbol} / AUSD</span><span className={market.changePct >= 0 ? 'signal-up' : 'signal-down'}>{market.changePct >= 0 ? '+' : ''}{market.changePct.toFixed(2)}%</span></div><h3>${market.mark.toLocaleString(undefined, { maximumFractionDigits: 6 })}</h3><div className="signal-meta"><span>Mark price</span><span>Perpl · Testnet</span></div><div className="signal-observed">{market.updatedAt ? `Market updated ${new Date(market.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Market update time unavailable'}</div><div className="signal-actions"><button onClick={() => requestSignal(market)}>Ask an agent <ArrowRight size={14} /></button><a href="https://testnet.perpl.xyz" target="_blank" rel="noreferrer">Open market <ArrowUpRight size={14} /></a></div></article>)}</div></>}
+        {markets.length > 0 && <><div className="signal-feed-status"><span><i /> {marketsStale ? 'Showing last received prices' : 'Live Monad Testnet prices'}</span><span>{marketsUpdatedAt ? `Received ${new Date(marketsUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : ''}{marketsError ? ' · reconnecting' : ''}</span></div><div className="signal-grid">{markets.map((market) => <article className="signal-card" key={market.id}><div className="signal-card-top"><span>{market.symbol} / AUSD</span><span className={market.changePct >= 0 ? 'signal-up' : 'signal-down'}>{market.changePct >= 0 ? '+' : ''}{market.changePct.toFixed(2)}%</span></div><h3>${market.mark.toLocaleString(undefined, { maximumFractionDigits: 6 })}</h3><div className="signal-meta"><span>Mark price</span><span>Perpl · Testnet</span></div><div className="signal-observed">{market.updatedAt ? `Market updated ${new Date(market.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Market update time unavailable'}</div><div className="signal-actions"><button onClick={() => requestSignal(market)}>Ask an agent <ArrowRight size={14} /></button><button className="trade-preview-button" onClick={() => setTradeMarket(market)}>Trade <ArrowRight size={14} /></button><a href="https://testnet.perpl.xyz" target="_blank" rel="noreferrer">Open market <ArrowUpRight size={14} /></a></div></article>)}</div></>}
       </section>}
 
       {(route === 'market' || route === 'profile') && <section className="market" id="network">
@@ -429,6 +431,8 @@ export default function App() {
     </footer>
 
     {notice && <div className="toast" role="status"><span>{notice}</span><button onClick={() => setNotice('')}><X size={15} /></button></div>}
+
+    {tradeMarket && <PerplTrader market={tradeMarket} walletAddress={walletAddress} onConnect={onConnect} onClose={() => setTradeMarket(null)} onNotice={setNotice} />}
 
     {selected && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeAgent() }}><section className="agent-drawer">
       <button className="close-button" aria-label="Close agent" onClick={closeAgent}><X size={19} /></button>

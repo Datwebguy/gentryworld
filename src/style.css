@@ -354,6 +354,34 @@ footer > div { display: flex; justify-content: flex-end; gap: 22px; }
 .signal-card a { display: inline-flex; align-items: center; gap: 7px; color: var(--ink); font-size: 11px; font-weight: 700; text-decoration: none; }
 .signal-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .signal-actions button { display: inline-flex; align-items: center; gap: 7px; border: 0; border-radius: 7px; padding: 9px 11px; background: var(--ink); color: #fff; font-size: 11px; font-weight: 700; }
+.signal-actions .trade-preview-button { background: var(--accent, #5849e8); color: #fff; }
+.perpl-trader-modal { width: min(100%, 520px); max-height: min(92vh, 820px); overflow-y: auto; }
+.perpl-link-form, .perpl-order-form { display: grid; gap: 11px; margin-top: 22px; }
+.perpl-link-form > label, .perpl-order-form > label, .trade-fields label { color: var(--ink); font-size: 12px; font-weight: 650; }
+.perpl-link-form input, .perpl-order-form input, .perpl-order-form select, .perpl-order-form > select { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 9px; padding: 0 13px; color: var(--ink); background: var(--surface); font: inherit; }
+.perpl-privacy { display: flex; align-items: flex-start; gap: 8px; border-radius: 9px; padding: 11px; color: var(--muted); background: var(--surface-soft); font-size: 11px; line-height: 1.5; }
+.perpl-privacy svg { flex: 0 0 auto; margin-top: 1px; }
+.perpl-help-link { display: inline-flex; justify-content: center; align-items: center; gap: 5px; color: var(--muted); font-size: 11px; text-decoration: none; }
+.trade-direction { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.trade-direction button { min-height: 39px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted); font: inherit; font-weight: 650; }
+.trade-direction button.active.long { color: #087b51; border-color: #36b985; background: #e2f6ec; }
+.trade-direction button.active.short { color: #bb443a; border-color: #f08478; background: #fff0ed; }
+.trade-fields { display: grid; grid-template-columns: 1fr 130px; gap: 12px; }
+.trade-fields label { display: grid; gap: 7px; }
+.order-review { display: grid; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.order-review > div { display: grid; gap: 5px; padding: 12px; border-bottom: 1px solid var(--line); }
+.order-review > div:nth-child(odd) { border-right: 1px solid var(--line); }
+.order-review span { color: var(--muted); font-size: 10px; }
+.order-review strong { color: var(--ink); font-size: 12px; }
+.trade-risk-note, .perpl-network-note { color: var(--muted); font-size: 11px !important; line-height: 1.55; }
+.perpl-network-note { margin: 14px 0 0 !important; text-align: center; }
+.perpl-inline-error { margin-top: 12px; border-radius: 8px; padding: 11px; color: #a23c32; background: #fff0ed; font-size: 12px; line-height: 1.5; }
+.perpl-inline-error a { display: inline-flex; align-items: center; gap: 3px; color: inherit; }
+.order-result { display: grid; justify-items: center; gap: 12px; margin-top: 20px; text-align: center; }
+.order-result h3, .order-result p { margin: 0; }
+.order-result p { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.order-result .order-review { width: 100%; text-align: left; }
+@media (max-width: 560px) { .trade-fields { grid-template-columns: 1fr 105px; } .signal-actions { flex-wrap: wrap; justify-content: flex-start; } }
 @media (max-width: 900px) { .signal-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 560px) { .signal-grid { grid-template-columns: 1fr; } }
 
