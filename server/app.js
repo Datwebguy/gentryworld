@@ -258,69 +258,6 @@ app.get('/api/markets', async (_req, res) => {
   }
 })
 
-const polymarketData = new Map()
-async function readPolymarket(key, url, maxAge = 20_000) {
-  const now = Date.now()
-  const cached = polymarketData.get(key)
-  if (cached?.value && now - cached.updatedAt < maxAge) return { ...cached, stale: false }
-  if (cached?.promise) return cached.promise
-  const entry = cached || { value: null, updatedAt: 0, promise: null }
-  entry.promise = (async () => {
-    const response = await fetch(url, { signal: AbortSignal.timeout(10_000), headers: { accept: 'application/json' } })
-    if (!response.ok) throw new Error(`Polymarket data returned ${response.status}`)
-    entry.value = await response.json()
-    entry.updatedAt = Date.now()
-    return { ...entry, stale: false }
-  })().catch((error) => {
-    if (entry.value) return { ...entry, stale: true }
-    throw error
-  }).finally(() => { entry.promise = null; polymarketData.set(key, entry) })
-  polymarketData.set(key, entry)
-  return entry.promise
-}
-
-app.get('/api/copy-trading/leaderboard', async (req, res) => {
-  const periods = new Set(['DAY', 'WEEK', 'MONTH', 'ALL'])
-  const categories = new Set(['OVERALL', 'POLITICS', 'SPORTS', 'ESPORTS', 'CRYPTO', 'CULTURE', 'MENTIONS', 'WEATHER', 'ECONOMICS', 'TECH', 'FINANCE'])
-  const period = String(req.query.period || 'MONTH').toUpperCase()
-  const category = String(req.query.category || 'OVERALL').toUpperCase()
-  if (!periods.has(period) || !categories.has(category)) return res.status(400).json({ error: 'Choose a supported time period and market category.' })
-  const key = `leaderboard:${period}:${category}`
-  const url = new URL('https://data-api.polymarket.com/v2/leaderboard')
-  url.searchParams.set('timePeriod', period)
-  url.searchParams.set('category', category)
-  url.searchParams.set('orderBy', 'PNL')
-  url.searchParams.set('limit', '24')
-  try {
-    const result = await readPolymarket(key, url)
-    res.setHeader('cache-control', 'public, max-age=15, stale-while-revalidate=30')
-    res.json({ source: 'Polymarket Data API', period, category, traders: result.value?.data || [], updatedAt: result.updatedAt, stale: result.stale })
-  } catch (error) {
-    console.error('Polymarket leaderboard failed:', error)
-    res.status(502).json({ error: 'Trader rankings are unavailable right now.' })
-  }
-})
-
-app.get('/api/copy-trading/trader', async (req, res) => {
-  const wallet = String(req.query.wallet || '')
-  if (!/^0x[a-fA-F0-9]{40}$/.test(wallet)) return res.status(400).json({ error: 'Enter a valid trader wallet.' })
-  const normalized = wallet.toLowerCase()
-  const params = new URLSearchParams({ user: normalized, limit: '8' })
-  const positionsUrl = `https://data-api.polymarket.com/v2/positions?${params}`
-  const tradesUrl = `https://data-api.polymarket.com/v2/trades?${params}`
-  try {
-    const [positions, trades] = await Promise.all([
-      readPolymarket(`positions:${normalized}`, positionsUrl),
-      readPolymarket(`trades:${normalized}`, tradesUrl),
-    ])
-    res.setHeader('cache-control', 'public, max-age=10, stale-while-revalidate=20')
-    res.json({ source: 'Polymarket Data API', wallet: normalized, positions: positions.value?.data || [], trades: trades.value?.data || [], updatedAt: Math.min(positions.updatedAt, trades.updatedAt), stale: positions.stale || trades.stale })
-  } catch (error) {
-    console.error('Polymarket trader detail failed:', error)
-    res.status(502).json({ error: 'This trader’s activity is unavailable right now.' })
-  }
-})
-
 const agentIndex = { agents: [], updatedAt: 0, latestId: null, promise: null }
 const resolveProfileUri = (uri) => uri.startsWith('ipfs://')
   ? `https://ipfs.io/ipfs/${uri.slice(7)}`
@@ -654,6 +591,8 @@ if (configured) {
 } else {
   console.warn('Paid agent endpoint is inactive. Configure GENTRY_AGENT_PAY_TO and GENTRY_AGENT_PRICE_USDC.')
 }
+
+app.use('/api', (_req, res) => res.status(404).json({ error: 'This service is not available.' }))
 
 app.use(express.static(root))
 app.get(/.*/, (_req, res) => res.sendFile(`${root}/index.html`))
