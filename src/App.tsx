@@ -1,4 +1,5 @@
 import { Home } from './Home'
+import { CopyTerminal } from './CopyTerminal'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, ArrowRight, ArrowUpRight, ArrowUpRightFromSquare, Check, Moon, Sun,
@@ -31,7 +32,7 @@ const explorer = 'https://testnet.monadscan.com'
 const identityRegistry = '0x8004A818BFB912233c491871b3d84c89A494BD9e'
 const agentSnapshotKey = 'gentry:monad-testnet:agents:v2'
 
-type Route = 'home' | 'market' | 'workspaces' | 'signals' | 'reputation' | 'publish' | 'profile'
+type Route = 'home' | 'market' | 'workspaces' | 'signals' | 'reputation' | 'publish' | 'profile' | 'copy-trading'
 type Market = { id: number; symbol: string; name: string; mark: number; previous: number; changePct: number; fundingRate: number; open: boolean; updatedAt?: number }
 
 function routeFromHash(hash: string): Route {
@@ -39,6 +40,7 @@ function routeFromHash(hash: string): Route {
   if (value === 'network' || value === 'market') return 'market'
   if (value === 'workspaces') return 'workspaces'
   if (value === 'signals' || value === 'markets') return 'signals'
+  if (value === 'copy-trading' || value === 'copy') return 'copy-trading'
   if (value.startsWith('agent-')) return 'profile'
   if (value === 'leaderboard' || value === 'reputation') return 'reputation'
   if (value === 'builders' || value === 'publish') return 'publish'
@@ -175,6 +177,8 @@ export default function App() {
   const [marketsLoading, setMarketsLoading] = useState(false)
   const [marketsError, setMarketsError] = useState('')
   const [marketsUpdatedAt, setMarketsUpdatedAt] = useState<number | null>(null)
+  const [marketsStale, setMarketsStale] = useState(false)
+  const [marketsRetry, setMarketsRetry] = useState(0)
 
   useEffect(() => {
     const onHashChange = () => setRoute(routeFromHash(window.location.hash))
@@ -219,9 +223,17 @@ export default function App() {
         const payload = await response.json()
         const rows = Array.isArray(payload.markets) ? payload.markets.filter((item: Market) => Number.isFinite(item.mark) && item.mark > 0) : []
         if (!rows.length) throw new Error('No current markets')
-        if (active) { setMarkets(rows); setMarketsError(''); setMarketsUpdatedAt(Date.now()) }
+        if (active) {
+          setMarkets(rows)
+          setMarketsError('')
+          setMarketsUpdatedAt(Number(payload.updatedAt) || Date.now())
+          setMarketsStale(Boolean(payload.stale))
+        }
       } catch {
-        if (active) setMarketsError('Could not load live prices. We’ll keep trying automatically.')
+        if (active) {
+          setMarketsError('Could not load live prices. We’ll keep trying automatically.')
+          setMarketsStale(true)
+        }
       } finally {
         if (active && first) { setMarketsLoading(false); first = false }
       }
@@ -229,7 +241,7 @@ export default function App() {
     void load()
     const timer = window.setInterval(() => { void load() }, 15000)
     return () => { active = false; window.clearInterval(timer) }
-  }, [route])
+  }, [route, marketsRetry])
 
   const filtered = useMemo(() => (filter === 'payable' ? uniquePayableProfiles(agents) : agents).filter((agent) => {
     if (filter === 'payable' && !endpointsOf(agent).length) return false
@@ -358,12 +370,14 @@ export default function App() {
   return <div className="app-shell" id="top">
     <a className="skip-link" href="#main-content">Skip to content</a><header className="topbar">
       <a className="brand" href="#top"><span className="brand-mark"><Command size={18} strokeWidth={2.5} /></span><span>GentrY</span></a>
-      <nav><a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a><a className={route === 'workspaces' ? 'active' : ''} href="#workspaces">Workspaces</a><a className={route === 'market' ? 'active' : ''} href="#network">Agents</a><a className={route === 'reputation' ? 'active' : ''} href="#leaderboard">Reputation</a></nav>
+      <nav><a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a><a className={route === 'copy-trading' ? 'active' : ''} href="#copy-trading">Copy</a><a className={route === 'workspaces' ? 'active' : ''} href="#workspaces">Workspaces</a><a className={route === 'market' ? 'active' : ''} href="#network">Agents</a><a className={route === 'reputation' ? 'active' : ''} href="#leaderboard">Reputation</a></nav>
       <div className="top-actions"><button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button><button className="wallet-button" aria-label={walletAddress ? `Connected wallet ${walletAddress}` : 'Connect wallet'} onClick={() => void onConnect()}><Wallet size={15} />{walletAddress ? shortAddress(walletAddress) : 'Connect'}</button></div>
     </header>
 
     <main className={route === 'home' ? 'home-main' : 'app-main'} id="main-content">
       {route === 'home' && <Home agents={agents.length} available={payableCount} reviews={feedbackCount} loading={loading} onPublish={() => setShowRegister(true)} />}
+
+      {route === 'copy-trading' && <CopyTerminal />}
 
       {route === 'workspaces' && <section className="workspace-section" id="workspaces">
         <div className="workspace-heading"><div><span>LIVE USE CASES</span><h2>Start with a financial question.</h2><p>Choose a task, review the price, and get an answer with a payment receipt.</p></div><Activity size={34} /></div>
@@ -376,10 +390,10 @@ export default function App() {
       </section>}
 
       {route === 'signals' && <section className="signals-section" id="signals">
-        <div className="workspace-heading"><div><span>LIVE MARKET SIGNALS</span><h2>See what is moving.</h2><p>Follow prices and market changes. Choose a market to get a closer look.</p></div><Activity size={34} /></div>
-        {marketsError && markets.length === 0 && <div className="state-panel"><CircleHelp size={20} /><div><strong>Prices are taking a moment</strong><p>{marketsError}</p></div></div>}
+        <div className="workspace-heading"><div><span>LIVE MARKET SIGNALS</span><h2>See what is moving.</h2><p>Follow prices and market changes. Choose a market to get a closer look.</p></div><button className="refresh-button" disabled={marketsLoading} onClick={() => setMarketsRetry((value) => value + 1)}>{marketsLoading ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}Refresh</button></div>
+        {marketsError && markets.length === 0 && <div className="state-panel"><CircleHelp size={20} /><div><strong>Prices are taking a moment</strong><p>{marketsError}</p><button className="text-button" onClick={() => setMarketsRetry((value) => value + 1)}>Try again <ArrowRight size={14} /></button></div></div>}
         {marketsLoading && markets.length === 0 && <div className="signal-grid skeleton-grid">{[0, 1, 2].map((item) => <div className="signal-card skeleton" key={item} />)}</div>}
-        {markets.length > 0 && <><div className="signal-feed-status"><span><i /> Live market data</span><span>{marketsUpdatedAt ? `Updated ${new Date(marketsUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : ''}{marketsError ? ' · reconnecting' : ''}</span></div><div className="signal-grid">{markets.map((market) => <article className="signal-card" key={market.id}><div className="signal-card-top"><span>{market.symbol} / AUSD</span><span className={market.changePct >= 0 ? 'signal-up' : 'signal-down'}>{market.changePct >= 0 ? '+' : ''}{market.changePct.toFixed(2)}%</span></div><h3>${market.mark.toLocaleString(undefined, { maximumFractionDigits: 6 })}</h3><div className="signal-meta"><span>Mark price</span><span>Perpl</span></div><div className="signal-observed">{market.updatedAt ? `Updated ${new Date(market.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Update time unavailable'}</div><div className="signal-actions"><button onClick={() => requestSignal(market)}>Ask an agent <ArrowRight size={14} /></button><a href="https://testnet.perpl.xyz" target="_blank" rel="noreferrer">Open market <ArrowUpRight size={14} /></a></div></article>)}</div></>}
+        {markets.length > 0 && <><div className="signal-feed-status"><span><i /> {marketsStale ? 'Showing last received prices' : 'Live Monad Testnet prices'}</span><span>{marketsUpdatedAt ? `Received ${new Date(marketsUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : ''}{marketsError ? ' · reconnecting' : ''}</span></div><div className="signal-grid">{markets.map((market) => <article className="signal-card" key={market.id}><div className="signal-card-top"><span>{market.symbol} / AUSD</span><span className={market.changePct >= 0 ? 'signal-up' : 'signal-down'}>{market.changePct >= 0 ? '+' : ''}{market.changePct.toFixed(2)}%</span></div><h3>${market.mark.toLocaleString(undefined, { maximumFractionDigits: 6 })}</h3><div className="signal-meta"><span>Mark price</span><span>Perpl · Testnet</span></div><div className="signal-observed">{market.updatedAt ? `Market updated ${new Date(market.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Market update time unavailable'}</div><div className="signal-actions"><button onClick={() => requestSignal(market)}>Ask an agent <ArrowRight size={14} /></button><a href="https://testnet.perpl.xyz" target="_blank" rel="noreferrer">Open market <ArrowUpRight size={14} /></a></div></article>)}</div></>}
       </section>}
 
       {(route === 'market' || route === 'profile') && <section className="market" id="network">
@@ -409,7 +423,7 @@ export default function App() {
 
     <footer className="site-footer">
       <div className="footer-upper"><div className="footer-about"><a className="brand" href="#top"><span className="brand-mark"><Command size={18} strokeWidth={2.5} /></span><span>GentrY</span></a><p>Good questions.<br />Better connections.</p><span>Financial agents, working for you.</span></div>
-      <div className="footer-links"><strong>Explore</strong><a href="#signals">Signals</a><a href="#workspaces">Workspaces</a><a href="#network">Find an agent</a><a href="#leaderboard">Reputation</a></div>
+      <div className="footer-links"><strong>Explore</strong><a href="#signals">Signals</a><a href="#copy-trading">Copy traders</a><a href="#workspaces">Workspaces</a><a href="#network">Find an agent</a><a href="#leaderboard">Reputation</a></div>
       <div className="footer-links"><strong>Create</strong><a href="#builders">Publish an agent</a><a href="https://github.com/Datwebguy/gentryworld" target="_blank" rel="noreferrer">GitHub <ArrowUpRight size={12} /></a><a href="https://monad.xyz" target="_blank" rel="noreferrer">Built on Monad <ArrowUpRight size={12} /></a></div>
       </div><div className="footer-bottom"><span>GentrY. Open collaboration, real work.</span><span className="network-badge"><i /> Monad Testnet</span><a href="#top">Back to home <ArrowUpRight size={14} /></a></div>
     </footer>

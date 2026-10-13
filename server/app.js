@@ -72,24 +72,101 @@ app.get('/api/markets', async (_req, res) => {
       if (!marketSnapshot.promise) marketSnapshot.promise = fetch('https://testnet.perpl.xyz/api/v1/pub/context', { signal: AbortSignal.timeout(8000) })
         .then((response) => { if (!response.ok) throw new Error('Perpl market context unavailable'); return response.json() })
         .then((context) => {
-          const markets = Array.isArray(context.markets) ? context.markets.map((market) => {
+          if (!Array.isArray(context.markets)) throw new Error('Perpl market context has no market list')
+          const markets = context.markets.map((market) => {
             const decimals = Number(market.config?.price_decimals || 0)
             const scale = 10 ** decimals
             const mid = Number(market.state?.mid || 0) / scale
             const previous = Number(market.state?.prv || 0) / scale
-            return { id: market.id, symbol: market.symbol, name: market.name, mark: mid, previous, changePct: previous ? ((mid - previous) / previous) * 100 : 0, fundingRate: Number(market.funding?.rate || 0), open: Boolean(market.config?.is_open), updatedAt: market.state?.at?.t || null }
-          }).filter((market) => market.open && market.mark > 0) : []
+            return {
+              id: market.id,
+              symbol: market.symbol,
+              name: market.name,
+              mark: mid,
+              previous,
+              changePct: previous ? ((mid - previous) / previous) * 100 : 0,
+              fundingRate: Number(market.funding?.rate || 0),
+              open: Boolean(market.config?.is_open),
+              updatedAt: Number(market.state?.at?.t || 0) || null,
+            }
+          }).filter((market) => market.open && Number.isFinite(market.mark) && market.mark > 0)
           marketSnapshot.value = { network: 'Monad Testnet', source: 'Perpl public market context', markets }
           marketSnapshot.updatedAt = Date.now()
           return marketSnapshot.value
+        }).catch((error) => {
+          if (marketSnapshot.value) return marketSnapshot.value
+          throw error
         }).finally(() => { marketSnapshot.promise = null })
-      else await marketSnapshot.promise
+      await marketSnapshot.promise
     }
     res.setHeader('cache-control', 'public, max-age=10, stale-while-revalidate=30')
-    res.json({ ...marketSnapshot.value, updatedAt: marketSnapshot.updatedAt })
+    res.json({ ...marketSnapshot.value, updatedAt: marketSnapshot.updatedAt, stale: Date.now() - marketSnapshot.updatedAt > 15_000 })
   } catch (error) {
     console.error('Market snapshot failed:', error)
     res.status(502).json({ error: 'Live market data is unavailable right now.' })
+  }
+})
+
+const polymarketData = new Map()
+async function readPolymarket(key, url, maxAge = 20_000) {
+  const now = Date.now()
+  const cached = polymarketData.get(key)
+  if (cached?.value && now - cached.updatedAt < maxAge) return { ...cached, stale: false }
+  if (cached?.promise) return cached.promise
+  const entry = cached || { value: null, updatedAt: 0, promise: null }
+  entry.promise = (async () => {
+    const response = await fetch(url, { signal: AbortSignal.timeout(10_000), headers: { accept: 'application/json' } })
+    if (!response.ok) throw new Error(`Polymarket data returned ${response.status}`)
+    entry.value = await response.json()
+    entry.updatedAt = Date.now()
+    return { ...entry, stale: false }
+  })().catch((error) => {
+    if (entry.value) return { ...entry, stale: true }
+    throw error
+  }).finally(() => { entry.promise = null; polymarketData.set(key, entry) })
+  polymarketData.set(key, entry)
+  return entry.promise
+}
+
+app.get('/api/copy-trading/leaderboard', async (req, res) => {
+  const periods = new Set(['DAY', 'WEEK', 'MONTH', 'ALL'])
+  const categories = new Set(['OVERALL', 'POLITICS', 'SPORTS', 'ESPORTS', 'CRYPTO', 'CULTURE', 'MENTIONS', 'WEATHER', 'ECONOMICS', 'TECH', 'FINANCE'])
+  const period = String(req.query.period || 'MONTH').toUpperCase()
+  const category = String(req.query.category || 'OVERALL').toUpperCase()
+  if (!periods.has(period) || !categories.has(category)) return res.status(400).json({ error: 'Choose a supported time period and market category.' })
+  const key = `leaderboard:${period}:${category}`
+  const url = new URL('https://data-api.polymarket.com/v2/leaderboard')
+  url.searchParams.set('timePeriod', period)
+  url.searchParams.set('category', category)
+  url.searchParams.set('orderBy', 'PNL')
+  url.searchParams.set('limit', '24')
+  try {
+    const result = await readPolymarket(key, url)
+    res.setHeader('cache-control', 'public, max-age=15, stale-while-revalidate=30')
+    res.json({ source: 'Polymarket Data API', period, category, traders: result.value?.data || [], updatedAt: result.updatedAt, stale: result.stale })
+  } catch (error) {
+    console.error('Polymarket leaderboard failed:', error)
+    res.status(502).json({ error: 'Trader rankings are unavailable right now.' })
+  }
+})
+
+app.get('/api/copy-trading/trader', async (req, res) => {
+  const wallet = String(req.query.wallet || '')
+  if (!/^0x[a-fA-F0-9]{40}$/.test(wallet)) return res.status(400).json({ error: 'Enter a valid trader wallet.' })
+  const normalized = wallet.toLowerCase()
+  const params = new URLSearchParams({ user: normalized, limit: '8' })
+  const positionsUrl = `https://data-api.polymarket.com/v2/positions?${params}`
+  const tradesUrl = `https://data-api.polymarket.com/v2/trades?${params}`
+  try {
+    const [positions, trades] = await Promise.all([
+      readPolymarket(`positions:${normalized}`, positionsUrl),
+      readPolymarket(`trades:${normalized}`, tradesUrl),
+    ])
+    res.setHeader('cache-control', 'public, max-age=10, stale-while-revalidate=20')
+    res.json({ source: 'Polymarket Data API', wallet: normalized, positions: positions.value?.data || [], trades: trades.value?.data || [], updatedAt: Math.min(positions.updatedAt, trades.updatedAt), stale: positions.stale || trades.stale })
+  } catch (error) {
+    console.error('Polymarket trader detail failed:', error)
+    res.status(502).json({ error: 'This trader’s activity is unavailable right now.' })
   }
 })
 
@@ -286,7 +363,7 @@ if (configured) {
 
   app.post('/api/market-signal', (req, res, next) => {
     const task = typeof req.body?.task === 'string' ? req.body.task : ''
-    if (!/\b(BTC|ETH|SOL|MON|ZEC|LIT|PUMP|NEAR)\b/i.test(task)) return res.status(400).json({ error: 'Name a supported market symbol.' })
+    if (!/\b[A-Z0-9]{2,12}\b/i.test(task)) return res.status(400).json({ error: 'Name the market symbol you want to review.' })
     next()
   })
 
@@ -389,19 +466,38 @@ if (configured) {
 
   app.post('/api/market-signal', async (req, res) => {
     const task = typeof req.body?.task === 'string' ? req.body.task : ''
-    const symbol = task.match(/\b(BTC|ETH|SOL|MON|ZEC|LIT|PUMP|NEAR)\b/i)?.[1]?.toUpperCase()
-    if (!symbol) return res.status(400).json({ error: 'Name a supported market symbol.' })
+    const requestedSymbols = new Set([...task.matchAll(/\b[A-Z0-9]{2,12}\b/gi)].map((match) => match[0].toUpperCase()))
     try {
       const response = await fetch('https://testnet.perpl.xyz/api/v1/pub/context', { signal: AbortSignal.timeout(8000) })
       if (!response.ok) throw new Error('market context unavailable')
       const context = await response.json()
-      const market = context.markets?.find((item) => item.symbol === symbol && item.config?.is_open)
+      const market = context.markets?.find((item) => requestedSymbols.has(String(item.symbol).toUpperCase()) && item.config?.is_open)
       if (!market) return res.status(404).json({ error: 'That market is not currently available.' })
+      const symbol = market.symbol
       const decimals = Number(market.config?.price_decimals || 0)
       const scale = 10 ** decimals
       const mark = Number(market.state?.mid || 0) / scale
       const previous = Number(market.state?.prv || 0) / scale
-      res.json({ network: 'Monad Testnet', market: market.name, symbol, markPrice: mark, previousPrice: previous, movementPercent: previous ? ((mark - previous) / previous) * 100 : 0, fundingRate: Number(market.funding?.rate || 0), source: 'Perpl public market context', observedAt: market.state?.at?.t || null })
+      const bid = Number(market.state?.bid || 0) / scale
+      const ask = Number(market.state?.ask || 0) / scale
+      const fundingMicros = Number(market.funding?.rate || 0)
+      const spreadBps = mark > 0 && ask >= bid ? ((ask - bid) / mark) * 10_000 : null
+      res.json({
+        network: 'Monad Testnet',
+        market: market.name,
+        symbol,
+        markPrice: mark,
+        change24hPercent: previous ? ((mark - previous) / previous) * 100 : null,
+        bestBid: bid || null,
+        bestAsk: ask || null,
+        spreadBps,
+        fundingRatePercent: fundingMicros / 10_000,
+        fundingIntervalMinutes: Math.round(Number(market.funding_interval_sec || 0) / 60),
+        fundingAppliesAt: market.funding?.at?.t || null,
+        observedAt: market.state?.at?.t || null,
+        source: 'Perpl public market data',
+        note: 'Past price movement is not a forecast. Perpetual positions can lose collateral; review leverage and liquidation risk before placing an order.',
+      })
     } catch { res.status(502).json({ error: 'Live market data is temporarily unavailable.' }) }
   })
 } else {
