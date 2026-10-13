@@ -141,7 +141,7 @@ app.post('/api/perpl/order', async (req, res) => {
     if (!Number.isSafeInteger(scaledSize) || scaledSize <= 0) return res.status(400).json({ error: 'Order size is below this market’s supported precision.' })
     const actualSize = scaledSize / scale
     const actualNotional = actualSize * mark
-    const accountFeeTier = Number(wallet.fl || 0)
+    const accountFeeTier = Number(account.ft || 0)
     const takerFees = Array.isArray(market.config.taker_fees) ? market.config.taker_fees : []
     const feeMicros = Number(takerFees[accountFeeTier] ?? market.config.taker_fee ?? 0)
     const requestId = Math.max(Number(account.lfr || 0), 0) + 1
@@ -178,17 +178,17 @@ app.get('/api/markets', async (_req, res) => {
           const markets = context.markets.map((market) => {
             const decimals = Number(market.config?.price_decimals || 0)
             const scale = 10 ** decimals
-            const mid = Number(market.state?.mid || 0) / scale
+            const mark = Number(market.state?.mrk || market.state?.mid || 0) / scale
             const previous = Number(market.state?.prv || 0) / scale
             return {
               id: market.id,
               symbol: market.symbol,
               name: market.name,
-              mark: mid,
+              mark,
               previous,
-              changePct: previous ? ((mid - previous) / previous) * 100 : 0,
+              changePct: previous ? ((mark - previous) / previous) * 100 : 0,
               fundingRate: Number(market.funding?.rate || 0),
-              sizeDecimals: decimals,
+              sizeDecimals: Number(market.config?.size_decimals || 0),
               priceDecimals: Number(market.config?.price_decimals || 0),
               maxLeverage: Number(market.config?.initial_margin || 0) > 0 ? 10_000 / Number(market.config.initial_margin) : null,
               maxSlippageBps: Number(market.order_max_market_slippage_bps || 0),
@@ -582,7 +582,7 @@ if (configured) {
       const symbol = market.symbol
       const decimals = Number(market.config?.price_decimals || 0)
       const scale = 10 ** decimals
-      const mark = Number(market.state?.mid || 0) / scale
+      const mark = Number(market.state?.mrk || market.state?.mid || 0) / scale
       const previous = Number(market.state?.prv || 0) / scale
       const bid = Number(market.state?.bid || 0) / scale
       const ask = Number(market.state?.ask || 0) / scale
