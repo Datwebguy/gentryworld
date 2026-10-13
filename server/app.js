@@ -147,6 +147,7 @@ app.post('/api/perpl/order', async (req, res) => {
     const requestId = Math.max(Number(account.lfr || 0), 0) + 1
     const spec = { rq: requestId, mkt: Number(market.id), acc: Number(account.id), t: direction === 'long' ? 1 : 2, p: 0, s: scaledSize, ms: Number(market.order_max_market_slippage_bps || 0), fl: 4, lv: Math.round(lev * 100), lb: 0 }
     const body = JSON.stringify({ d: [spec] })
+    const submittedAt = Date.now()
     const submitResponse = await signedPerplRequest(credentials, 'POST', '/v1/trading/orders', body)
     const acknowledgment = await submitResponse.json().catch(() => ({}))
     if (!submitResponse.ok) return res.status(submitResponse.status).json({ error: submitResponse.status === 403 ? 'This Perpl API key needs trading access.' : submitResponse.status === 401 ? 'Perpl could not verify these credentials.' : acknowledgment.status?.error || 'Perpl did not accept the order request.' })
@@ -155,10 +156,28 @@ app.post('/api/perpl/order', async (req, res) => {
     let order = null
     for (let attempt = 0; attempt < 5 && !order; attempt++) {
       if (attempt) await new Promise((resolve) => setTimeout(resolve, 700))
-      const history = await signedPerplRequest(credentials, 'GET', '/v1/trading/order-history?count=50')
-      if (history.ok) {
-        const data = await history.json().catch(() => ({}))
-        order = data.d?.find((item) => Number(item.rq) === requestId && Number(item.acc) === Number(account.id) && Number(item.mkt) === Number(market.id)) || null
+      const [historyResponse, fillsResponse] = await Promise.all([
+        signedPerplRequest(credentials, 'GET', '/v1/trading/order-history?count=50'),
+        signedPerplRequest(credentials, 'GET', '/v1/trading/fills?count=50'),
+      ])
+      if (historyResponse.ok) {
+        const history = await historyResponse.json().catch(() => ({}))
+        order = history.d?.find((item) => Number(item.rq) === requestId && Number(item.acc) === Number(account.id) && Number(item.mkt) === Number(market.id)) || null
+      }
+      // Perpl may publish the fill before its order-history view catches up.
+      // A fill carries no request ID, so only associate a recent fill matching
+      // this account, market, side, and the requested size, within this request's
+      // short settlement window.
+      if (!order && fillsResponse.ok) {
+        const fills = await fillsResponse.json().catch(() => ({}))
+        const recent = (fills.d || []).filter((item) => Number(item.acc) === Number(account.id) && Number(item.mkt) === Number(market.id) && Number(item.t) === spec.t && Number(item.at?.t) >= submittedAt - 1000 && Number(item.at?.t) <= submittedAt + 15_000)
+        if (recent.length) {
+          const orderId = Number(recent[0].oid)
+          const sameOrder = recent.filter((item) => Number(item.oid) === orderId)
+          const filledSize = sameOrder.reduce((sum, item) => sum + Number(item.s || 0), 0)
+          const averagePrice = filledSize ? sameOrder.reduce((sum, item) => sum + Number(item.p || 0) * Number(item.s || 0), 0) / filledSize : 0
+          order = { st: filledSize >= scaledSize ? 4 : 3, sr: 0, fs: filledSize, fp: averagePrice, oid: orderId, rq: requestId }
+        }
       }
     }
     res.json({ accepted: true, requestId, market: market.symbol, direction, mark, size: actualSize, notional: actualNotional, leverage: lev, estimatedCollateral: actualNotional / lev, estimatedTakerFee: actualNotional * feeMicros / 1_000_000, slippageBps: spec.ms, status: order ? { code: Number(order.st), reason: Number(order.sr), filledSize: Number(order.fs || 0) / scale, averageFillPrice: Number(order.fp || 0) / (10 ** Number(market.config.price_decimals || 0)), orderId: Number(order.oid || 0), requestId: Number(order.rq) } : null })
