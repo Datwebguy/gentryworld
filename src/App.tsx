@@ -50,6 +50,19 @@ function endpointsOf(agent: Agent): AgentEndpoint[] {
   return agent.card.endpoints.filter((item: AgentEndpoint) => item && typeof (item.endpoint || item.url) === 'string')
 }
 
+function uniquePayableProfiles(agents: Agent[]) {
+  const seen = new Set<string>()
+  return [...agents].sort((a, b) => a.id > b.id ? -1 : a.id < b.id ? 1 : 0).filter((agent) => {
+    const endpoints = endpointsOf(agent)
+    if (!endpoints.length) return false
+    const owner = (agent.owner || agent.card?.owner || '').toLowerCase()
+    const key = `${owner}|${agent.uri}`
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 function hasProtectedService(agent: Agent) {
   return agent.card?.x402Support === false && Array.isArray(agent.card?.services) && agent.card.services.some((service: any) =>
     service && typeof service.endpoint === 'string' && /^https?:\/\//i.test(service.endpoint),
@@ -218,7 +231,7 @@ export default function App() {
     return () => { active = false; window.clearInterval(timer) }
   }, [route])
 
-  const filtered = useMemo(() => agents.filter((agent) => {
+  const filtered = useMemo(() => (filter === 'payable' ? uniquePayableProfiles(agents) : agents).filter((agent) => {
     if (filter === 'payable' && !endpointsOf(agent).length) return false
     if (filter === 'services' && !endpointsOf(agent).length && !hasProtectedService(agent)) return false
     const term = query.trim().toLowerCase()
@@ -226,9 +239,9 @@ export default function App() {
       .some((value) => String(value || '').toLowerCase().includes(term))
   }), [agents, filter, query])
 
-  const payableCount = agents.filter((agent) => endpointsOf(agent).length > 0).length
+  const payableCount = uniquePayableProfiles(agents).length
   const feedbackCount = agents.reduce((total, agent) => total + Number(agent.summary?.count || 0n), 0)
-  const featured = agents.find((agent) => endpointsOf(agent).length > 0)
+  const featured = uniquePayableProfiles(agents)[0]
   const leaderboard = useMemo(() => [...agents].filter((agent) => agent.summary).sort((a, b) => {
     const scoreDifference = Number(scoreOf(b)) - Number(scoreOf(a))
     return scoreDifference || Number((b.summary?.count || 0n) - (a.summary?.count || 0n))
