@@ -4,8 +4,9 @@ import { ArrowUpRight, Check, LoaderCircle, LockKeyhole, X } from 'lucide-react'
 type Market = {
   id: number; symbol: string; mark: number; sizeDecimals?: number; maxLeverage?: number | null; maxSlippageBps?: number
 }
+export type TradeIntent = { direction?: 'long' | 'short'; notional?: string; leverage?: string }
 type PerplAccount = { id: number; forwarding: boolean; lastRequestId: number; balance?: string; equity?: string }
-type Props = { market: Market; walletAddress: string; onConnect: () => void | Promise<void>; onClose: () => void; onNotice: (message: string) => void }
+type Props = { market: Market; intent?: TradeIntent; walletAddress: string; onConnect: () => void | Promise<void>; onClose: () => void; onNotice: (message: string) => void }
 type OrderResult = {
   accepted: boolean; requestId: number; market: string; direction: string; mark: number; size: number; notional: number;
   leverage: number; estimatedCollateral: number; estimatedTakerFee: number; slippageBps: number;
@@ -15,14 +16,14 @@ type OrderResult = {
 const statusNames: Record<number, string> = { 1: 'Pending', 2: 'Open', 3: 'Partially filled', 4: 'Filled', 5: 'Canceled', 6: 'Expired', 7: 'Could not be placed', 8: 'Waiting for trigger', 9: 'Triggered', 10: 'Executed' }
 const money = (value: number) => `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
 
-export function PerplTrader({ market, walletAddress, onConnect, onClose, onNotice }: Props) {
+export function PerplTrader({ market, intent, walletAddress, onConnect, onClose, onNotice }: Props) {
   const [apiKey, setApiKey] = useState('')
   const [privateKey, setPrivateKey] = useState('')
   const [accounts, setAccounts] = useState<PerplAccount[]>([])
   const [accountId, setAccountId] = useState('')
-  const [direction, setDirection] = useState<'long' | 'short'>('long')
-  const [notional, setNotional] = useState('')
-  const [leverage, setLeverage] = useState('1')
+  const [direction, setDirection] = useState<'long' | 'short'>(intent?.direction || 'long')
+  const [notional, setNotional] = useState(intent?.notional || '')
+  const [leverage, setLeverage] = useState(intent?.leverage || '1')
   const [busy, setBusy] = useState<'account' | 'order' | null>(null)
   const [error, setError] = useState('')
   const [result, setResult] = useState<OrderResult | null>(null)
@@ -93,11 +94,11 @@ export function PerplTrader({ market, walletAddress, onConnect, onClose, onNotic
         <label htmlFor="perpl-account">Trading account</label>
         <select id="perpl-account" value={accountId} onChange={(event) => setAccountId(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>Account {account.id}{account.forwarding ? '' : ' · forwarding off'}</option>)}</select>
         {!accounts.find((account) => String(account.id) === accountId)?.forwarding && <div className="perpl-privacy">Turn on Order Forwarding in Perpl account settings before continuing.</div>}
-        <div className="trade-direction"><button type="button" className={direction === 'long' ? 'active long' : ''} onClick={() => setDirection('long')}>Long</button><button type="button" className={direction === 'short' ? 'active short' : ''} onClick={() => setDirection('short')}>Short</button></div>
+        <div className="trade-direction"><button type="button" className={direction === 'long' ? 'active long' : ''} onClick={() => setDirection('long')}>Buy / Long</button><button type="button" className={direction === 'short' ? 'active short' : ''} onClick={() => setDirection('short')}>Sell / Short</button></div>
         <div className="trade-fields"><label htmlFor="trade-notional">Order value (USD)<input id="trade-notional" type="number" min="0.01" step="any" inputMode="decimal" value={notional} onChange={(event) => setNotional(event.target.value)} placeholder="Enter amount" required /></label><label htmlFor="trade-leverage">Leverage<select id="trade-leverage" value={leverage} onChange={(event) => setLeverage(event.target.value)}>{Array.from({ length: maxLeverage }, (_, i) => i + 1).map((value) => <option key={value} value={value}>{value}×</option>)}</select></label></div>
         <div className="order-review"><div><span>Market</span><strong>{market.symbol} perpetual</strong></div><div><span>Mark price</span><strong>{money(market.mark)}</strong></div><div><span>Approx. size</span><strong>{estimate ? `${estimate.size.toFixed(market.sizeDecimals ?? 4)} ${market.symbol}` : '—'}</strong></div><div><span>Estimated collateral</span><strong>{estimate ? money(estimate.collateral) : '—'}</strong></div><div><span>Market slippage limit</span><strong>{market.maxSlippageBps ?? 0} bps</strong></div></div>
         <p className="trade-risk-note">Perpetuals can lose your collateral. The final fill price may differ from the mark price. Review the amount and direction before continuing.</p>
-        <button className="primary-button wide" disabled={busy !== null || !estimate || !accountId || !accounts.find((account) => String(account.id) === accountId)?.forwarding}>{busy === 'order' ? <LoaderCircle className="spin" size={16} /> : null}Place {direction} order</button>
+        <button className="primary-button wide" disabled={busy !== null || !estimate || !accountId || !accounts.find((account) => String(account.id) === accountId)?.forwarding}>{busy === 'order' ? <LoaderCircle className="spin" size={16} /> : null}Place {direction === 'long' ? 'buy / long' : 'sell / short'} order</button>
       </form>}
 
       {result && <div className="order-result"><div className="success-icon"><Check size={22} /></div><h3>{result.status ? statusNames[result.status.code] || 'Order updated' : 'Request accepted'}</h3><p>{result.status ? `${result.status.filledSize} ${result.market} filled at ${money(result.status.averageFillPrice)}.` : 'Perpl accepted the request. The exchange has not returned the final status yet.'}</p><div className="order-review"><div><span>Request number</span><strong>{result.requestId}</strong></div><div><span>Order value</span><strong>{money(result.notional)}</strong></div><div><span>Estimated fee</span><strong>{money(result.estimatedTakerFee)}</strong></div></div><button className="secondary-button wide" onClick={onClose}>Done</button></div>}

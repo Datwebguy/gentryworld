@@ -1,6 +1,6 @@
 import { Home } from './Home'
 import { CopyTerminal } from './CopyTerminal'
-import { PerplTrader } from './PerplTrader'
+import { PerplTrader, type TradeIntent } from './PerplTrader'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, ArrowRight, ArrowUpRight, ArrowUpRightFromSquare, Check, Moon, Sun,
@@ -27,6 +27,8 @@ type HireResult = {
   result: unknown
   paymentTx?: string
   feedbackTx?: string
+  market?: Market
+  request?: string
 }
 
 const explorer = 'https://testnet.monadscan.com'
@@ -108,6 +110,17 @@ function shortAddress(value?: string) {
   return value ? `${value.slice(0, 6)}…${value.slice(-4)}` : ''
 }
 
+function tradeIntentFromRequest(request?: string): TradeIntent | undefined {
+  if (!request) return undefined
+  const direction = /\b(sell|short)\b/i.test(request) ? 'short' : /\b(buy|long)\b/i.test(request) ? 'long' : undefined
+  const amountMatch = request.match(/\$\s*(\d+(?:\.\d+)?)|\b(\d+(?:\.\d+)?)\s*(?:usd|usdc|dollars?)\b/i)
+  const notional = amountMatch ? (amountMatch[1] || amountMatch[2]) : undefined
+  const leverageMatch = request.match(/\b(\d+(?:\.\d+)?)\s*[x×]\b/i)
+  const leverage = leverageMatch?.[1]
+  if (!direction && !notional && !leverage) return undefined
+  return { direction, notional, leverage }
+}
+
 function logoOf(agent: Agent) {
   const value = agent.card?.image || agent.card?.logo || agent.card?.icon || agent.card?.avatar
   if (typeof value !== 'string' || !value.trim()) return ''
@@ -181,6 +194,8 @@ export default function App() {
   const [marketsStale, setMarketsStale] = useState(false)
   const [marketsRetry, setMarketsRetry] = useState(0)
   const [tradeMarket, setTradeMarket] = useState<Market | null>(null)
+  const [tradeIntent, setTradeIntent] = useState<TradeIntent | undefined>(undefined)
+  const [signalMarket, setSignalMarket] = useState<Market | null>(null)
 
   useEffect(() => {
     const onHashChange = () => setRoute(routeFromHash(window.location.hash))
@@ -282,6 +297,7 @@ export default function App() {
     if (!featured) return setNotice('No payable agent is available for this request right now.')
     const endpoint = endpointsOf(featured).find((item) => /research|signal|analysis|market/i.test(item.name || ''))
     if (!endpoint) return setNotice('No payable agent is available for this request right now.')
+    setSignalMarket(market)
     setHireRequest({ agent: featured, endpoint })
     setHireInput(`Analyze ${market.symbol} Perp on Monad Testnet. Review the live mark price, movement, funding, and risk considerations.`)
   }
@@ -335,8 +351,9 @@ export default function App() {
       const text = await response.text()
       let result: unknown = text
       try { result = JSON.parse(text) } catch { /* Plain text responses remain readable. */ }
-      setHireResult({ agent, endpoint: url, result, paymentTx: settlement.transaction || settlement.txHash })
+      setHireResult({ agent, endpoint: url, result, paymentTx: settlement.transaction || settlement.txHash, market: signalMarket || undefined, request: input })
       setHireRequest(null); setSelected(null); setHireInput('')
+      setSignalMarket(null)
     } catch (cause) {
       const message = cause instanceof Error ? cause.message.toLowerCase() : ''
       setNotice(message.includes('user rejected') || message.includes('user denied') ? 'Payment was cancelled.' : 'The request could not be completed. Please try again.')
@@ -432,8 +449,6 @@ export default function App() {
 
     {notice && <div className="toast" role="status"><span>{notice}</span><button onClick={() => setNotice('')}><X size={15} /></button></div>}
 
-    {tradeMarket && <PerplTrader market={tradeMarket} walletAddress={walletAddress} onConnect={onConnect} onClose={() => setTradeMarket(null)} onNotice={setNotice} />}
-
     {selected && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeAgent() }}><section className="agent-drawer">
       <button className="close-button" aria-label="Close agent" onClick={closeAgent}><X size={19} /></button>
       <div className="drawer-head"><AgentAvatar agent={selected} large /><div><span>AGENT #{selected.id.toString()}</span><h2>{selected.card?.name}</h2></div></div>
@@ -445,9 +460,11 @@ export default function App() {
       <a className="profile-link" href={selected.uri.startsWith('ipfs://') ? `https://ipfs.io/ipfs/${selected.uri.slice(7)}` : selected.uri} target="_blank" rel="noreferrer">Open published profile <ArrowUpRightFromSquare size={14} /></a>
     </section></div>}
 
-    {hireRequest && <div className="modal-backdrop"><section className="modal hire-modal"><button className="close-button" disabled={busy !== null} onClick={() => setHireRequest(null)}><X size={19} /></button><span className="modal-kicker">PAID REQUEST</span><h2>{hireRequest.endpoint.name || `Hire ${hireRequest.agent.card?.name}`}</h2><p>{hireRequest.endpoint.name?.toLowerCase().includes('token') ? 'Enter a Monad token contract. The agent will verify it before requesting payment, then return live supply information.' : needsAddress(hireRequest.endpoint.name) ? 'Enter a Monad address. The agent will return its live balance and contract status.' : `Describe the work for ${hireRequest.agent.card?.name}.`}</p><form onSubmit={(event) => void hire(event)}><label htmlFor="hire-input">{needsAddress(hireRequest.endpoint.name) ? 'Monad address' : 'Your request'}</label><input id="hire-input" value={hireInput} onChange={(event) => setHireInput(event.target.value)} placeholder={needsAddress(hireRequest.endpoint.name) ? '0x…' : 'What should the agent do?'} autoFocus required /><div className="payment-summary"><div><Coins size={17} /><span>Payment</span></div><strong>{paymentOf(hireRequest.agent, hireRequest.endpoint) || 'Shown by your wallet'}</strong></div><button className="primary-button wide" disabled={busy !== null || !hireInput.trim()}>{busy === 'hire' ? <LoaderCircle className="spin" size={16} /> : <Wallet size={16} />} Review and pay</button></form></section></div>}
+    {hireRequest && <div className="modal-backdrop"><section className="modal hire-modal"><button className="close-button" disabled={busy !== null} onClick={() => { setHireRequest(null); setSignalMarket(null) }}><X size={19} /></button><span className="modal-kicker">PAID REQUEST</span><h2>{hireRequest.endpoint.name || `Hire ${hireRequest.agent.card?.name}`}</h2><p>{hireRequest.endpoint.name?.toLowerCase().includes('token') ? 'Enter a Monad token contract. The agent will verify it before requesting payment, then return live supply information.' : needsAddress(hireRequest.endpoint.name) ? 'Enter a Monad address. The agent will return its live balance and contract status.' : `Describe the work for ${hireRequest.agent.card?.name}. You can include a market, Buy or Sell, and an amount; you will review any order before it is placed.`}</p><form onSubmit={(event) => void hire(event)}><label htmlFor="hire-input">{needsAddress(hireRequest.endpoint.name) ? 'Monad address' : 'Your request'}</label><input id="hire-input" value={hireInput} onChange={(event) => setHireInput(event.target.value)} placeholder={needsAddress(hireRequest.endpoint.name) ? '0x…' : 'e.g. Review BTC; sell $25 if momentum weakens'} autoFocus required /><div className="payment-summary"><div><Coins size={17} /><span>Payment</span></div><strong>{paymentOf(hireRequest.agent, hireRequest.endpoint) || 'Shown by your wallet'}</strong></div><button className="primary-button wide" disabled={busy !== null || !hireInput.trim()}>{busy === 'hire' ? <LoaderCircle className="spin" size={16} /> : <Wallet size={16} />} Review and pay</button></form></section></div>}
 
-    {hireResult && <div className="modal-backdrop"><section className="modal result-modal"><button className="close-button" onClick={() => setHireResult(null)}><X size={19} /></button><div className="success-icon"><Check size={23} /></div><span className="modal-kicker">WORK DELIVERED</span><h2>Request complete.</h2><p>{hireResult.agent.card?.name} returned a result after the payment settled.</p><ResultView value={hireResult.result} />{hireResult.paymentTx && <a className="proof-link" href={`${explorer}/tx/${hireResult.paymentTx}`} target="_blank" rel="noreferrer"><Check size={14} /> Payment confirmed on Monad <ArrowUpRight size={13} /></a>}{!feedbackDone ? <div className="feedback-box"><div><strong>How was the result?</strong><span>Your review helps others choose the right agent.</span></div><div className="stars">{[1, 2, 3, 4, 5].map((value) => <button key={value} className={rating && value <= rating ? 'active' : ''} onClick={() => setRating(value)} aria-label={`${value} stars`}><Star size={21} fill="currentColor" /></button>)}</div><button className="primary-button wide" disabled={rating === '' || busy !== null} onClick={() => void sendFeedback()}>{busy === 'feedback' ? <LoaderCircle className="spin" size={16} /> : null}Record feedback</button></div> : <div className="feedback-complete"><Check size={17} /><div><strong>Reputation updated</strong>{hireResult.feedbackTx && <a href={`${explorer}/tx/${hireResult.feedbackTx}`} target="_blank" rel="noreferrer">View transaction <ArrowUpRight size={12} /></a>}</div></div>}</section></div>}
+    {hireResult && <div className="modal-backdrop"><section className="modal result-modal"><button className="close-button" onClick={() => setHireResult(null)}><X size={19} /></button><div className="success-icon"><Check size={23} /></div><span className="modal-kicker">WORK DELIVERED</span><h2>Request complete.</h2><p>{hireResult.agent.card?.name} returned a result after the payment settled.</p><ResultView value={hireResult.result} />{hireResult.market && <div className="feedback-box"><div><strong>Want to trade this market?</strong><span>{tradeIntentFromRequest(hireResult.request) ? 'We picked up your requested direction or amount. Check the draft and change anything before placing it.' : 'Choose Buy or Sell and set any amount. Review the order before sending it to Perpl.'}</span></div><button className="primary-button wide" onClick={() => { setTradeIntent(tradeIntentFromRequest(hireResult.request)); setTradeMarket(hireResult.market!) }}>Prepare an order <ArrowRight size={16} /></button></div>}{hireResult.paymentTx && <a className="proof-link" href={`${explorer}/tx/${hireResult.paymentTx}`} target="_blank" rel="noreferrer"><Check size={14} /> Payment confirmed on Monad <ArrowUpRight size={13} /></a>}{!feedbackDone ? <div className="feedback-box"><div><strong>How was the result?</strong><span>Your review helps others choose the right agent.</span></div><div className="stars">{[1, 2, 3, 4, 5].map((value) => <button key={value} className={rating && value <= rating ? 'active' : ''} onClick={() => setRating(value)} aria-label={`${value} stars`}><Star size={21} fill="currentColor" /></button>)}</div><button className="primary-button wide" disabled={rating === '' || busy !== null} onClick={() => void sendFeedback()}>{busy === 'feedback' ? <LoaderCircle className="spin" size={16} /> : null}Record feedback</button></div> : <div className="feedback-complete"><Check size={17} /><div><strong>Reputation updated</strong>{hireResult.feedbackTx && <a href={`${explorer}/tx/${hireResult.feedbackTx}`} target="_blank" rel="noreferrer">View transaction <ArrowUpRight size={12} /></a>}</div></div>}</section></div>}
+
+    {tradeMarket && <PerplTrader market={tradeMarket} intent={tradeIntent} walletAddress={walletAddress} onConnect={onConnect} onClose={() => { setTradeMarket(null); setTradeIntent(undefined) }} onNotice={setNotice} />}
 
     {showRegister && <div className="modal-backdrop"><section className="modal"><button className="close-button" onClick={() => setShowRegister(false)}><X size={19} /></button><span className="modal-kicker">PUBLISH AN AGENT</span><h2>Join the network.</h2><p>Provide a public profile containing the agent’s name, description, capabilities, and available services.</p><form onSubmit={(event) => void onRegister(event)}><label htmlFor="profile-uri">Profile link</label><input id="profile-uri" type="url" value={metadataUri} onChange={(event) => setMetadataUri(event.target.value)} placeholder="https://…" required /><div className="identity-note"><Fingerprint size={18} /><span>Approve registration in your wallet to publish your agent.</span></div><button className="primary-button wide" disabled={!metadataUri.trim() || busy !== null}>{busy === 'register' ? <LoaderCircle className="spin" size={16} /> : <Wallet size={16} />}Connect and register</button></form></section></div>}
   </div>
