@@ -30,6 +30,8 @@ type HireResult = {
   market?: Market
   request?: string
 }
+type ChatMessage = { role: 'user' | 'agent'; text: string; result?: unknown; paymentTx?: string }
+type ChatSession = { agent: Agent; endpoint: AgentEndpoint; market: Market }
 
 const explorer = 'https://testnet.monadscan.com'
 const identityRegistry = '0x8004A818BFB912233c491871b3d84c89A494BD9e'
@@ -110,13 +112,24 @@ function shortAddress(value?: string) {
   return value ? `${value.slice(0, 6)}…${value.slice(-4)}` : ''
 }
 
-function tradeIntentFromRequest(request?: string): TradeIntent | undefined {
-  if (!request) return undefined
-  const direction = /\b(sell|short)\b/i.test(request) ? 'short' : /\b(buy|long)\b/i.test(request) ? 'long' : undefined
-  const amountMatch = request.match(/\$\s*(\d+(?:\.\d+)?)|\b(\d+(?:\.\d+)?)\s*(?:usd|usdc|dollars?)\b/i)
-  const notional = amountMatch ? (amountMatch[1] || amountMatch[2]) : undefined
-  const leverageMatch = request.match(/\b(\d+(?:\.\d+)?)\s*[x×]\b/i)
-  const leverage = leverageMatch?.[1]
+function tradeIntentFromRequest(request?: string, result?: unknown): TradeIntent | undefined {
+  const mentionsShort = /\b(sell|short)\b/i.test(request || '')
+  const mentionsLong = /\b(buy|long)\b/i.test(request || '')
+  const requestDirection = mentionsShort === mentionsLong ? undefined : mentionsShort ? 'short' : 'long'
+  const amountMatch = request?.match(/\$\s*(\d+(?:\.\d+)?)|\b(\d+(?:\.\d+)?)\s*(?:usd|usdc|dollars?)\b/i)
+  const requestAmount = amountMatch ? (amountMatch[1] || amountMatch[2]) : undefined
+  const leverageMatch = request?.match(/\b(\d+(?:\.\d+)?)\s*[x×]\b/i)
+  const flat: Record<string, unknown> = {}
+  function collect(value: unknown) { if (!value || typeof value !== 'object') return; for (const [key, item] of Object.entries(value)) { if (item && typeof item === 'object') collect(item); else flat[key.toLowerCase().replace(/[^a-z]/g, '')] = item } }
+  collect(result)
+  const valueText = (keys: string[]) => keys.map((key) => flat[key]).find((value) => value !== undefined)
+  const agentSide = String(valueText(['direction', 'side', 'action', 'signal']) || '').toLowerCase()
+  const agentDirection = /short|sell/.test(agentSide) ? 'short' : /long|buy/.test(agentSide) ? 'long' : undefined
+  const agentAmount = valueText(['notional', 'amountusd', 'usdamount', 'ordervalue', 'suggestedsizeusd', 'sizeusd', 'suggestednotional'])
+  const agentLeverage = valueText(['leverage', 'leveragex'])
+  const direction = requestDirection || agentDirection
+  const notional = requestAmount || (agentAmount !== undefined && Number(agentAmount) > 0 ? String(agentAmount).replace(/[^\d.]/g, '') : undefined)
+  const leverage = leverageMatch?.[1] || (agentLeverage !== undefined ? String(agentLeverage).replace(/[^\d.]/g, '') : undefined)
   if (!direction && !notional && !leverage) return undefined
   return { direction, notional, leverage }
 }
@@ -181,6 +194,11 @@ export default function App() {
   const [hireRequest, setHireRequest] = useState<{ agent: Agent; endpoint: AgentEndpoint } | null>(null)
   const [hireInput, setHireInput] = useState('')
   const [hireResult, setHireResult] = useState<HireResult | null>(null)
+  const [chatSession, setChatSession] = useState<ChatSession | null>(null)
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([])
+  const [chatInput, setChatInput] = useState('')
+  const [chatBusy, setChatBusy] = useState(false)
+  const [chatLastResult, setChatLastResult] = useState<{ result: unknown; paymentTx?: string; request: string } | null>(null)
   const [rating, setRating] = useState<number | ''>('')
   const [feedbackDone, setFeedbackDone] = useState(false)
   const [showRegister, setShowRegister] = useState(false)
@@ -229,7 +247,7 @@ export default function App() {
   useEffect(() => { void refresh() }, [refresh])
 
   useEffect(() => {
-    if (route !== 'signals') return
+    if (route !== 'signals' && route !== 'copy-trading') return
     let active = true
     let first = true
     const load = async () => {
@@ -293,13 +311,53 @@ export default function App() {
     if (route === 'profile') window.location.hash = 'network'
   }
 
-  function requestSignal(market: Market) {
-    if (!featured) return setNotice('No payable agent is available for this request right now.')
-    const endpoint = endpointsOf(featured).find((item) => /research|signal|analysis|market/i.test(item.name || ''))
+  function requestSignal(market: Market, selectedAgent = featured) {
+    if (!selectedAgent) return setNotice('No payable agent is available for this request right now.')
+    const endpoint = endpointsOf(selectedAgent).find((item) => /research|signal|analysis|market/i.test(item.name || '')) || endpointsOf(selectedAgent)[0]
     if (!endpoint) return setNotice('No payable agent is available for this request right now.')
     setSignalMarket(market)
-    setHireRequest({ agent: featured, endpoint })
-    setHireInput(`Analyze ${market.symbol} Perp on Monad Testnet. Review the live mark price, movement, funding, and risk considerations.`)
+    setHireResult(null); setRating(''); setFeedbackDone(false)
+    setChatMessages([]); setChatLastResult(null); setChatInput(`What is your read on ${market.symbol} right now? Include the key risks and what would change your view.`)
+    setChatSession({ agent: selectedAgent, endpoint, market })
+  }
+
+  function closeChat() {
+    if (chatSession && chatLastResult) setHireResult({ agent: chatSession.agent, endpoint: chatSession.endpoint.endpoint || chatSession.endpoint.url || '', result: chatLastResult.result, paymentTx: chatLastResult.paymentTx, market: chatSession.market, request: chatLastResult.request })
+    setChatSession(null); setChatInput(''); setChatMessages([]); setChatLastResult(null)
+  }
+
+  async function sendChatMessage(event: React.FormEvent) {
+    event.preventDefault()
+    if (!chatSession || !chatInput.trim() || chatBusy) return
+    const userText = chatInput.trim()
+    setChatBusy(true); setNotice('')
+    try {
+      if (!connectedAddress) { await openWallet(); return }
+      const { address, wallet } = await connectWallet(walletProvider, connectedAddress)
+      setWalletAddress(address)
+      const signer = { address, signTypedData: async (message: any) => wallet.signTypedData({ account: address, domain: message.domain, types: message.types, primaryType: message.primaryType, message: message.message } as any) }
+      const client = new x402Client().register('eip155:10143', new ExactEvmScheme(signer as any)).registerPolicy((_version, requirements) => requirements.filter((requirement) => requirement.scheme === 'exact' && requirement.network === 'eip155:10143' && requirement.asset.toLowerCase() === usdcAddress.toLowerCase()))
+      const transcript = chatMessages.map((message) => `${message.role === 'user' ? 'User' : 'Agent'}: ${message.text}`).join('\n')
+      const task = `${transcript ? `Conversation so far:\n${transcript}\n\n` : ''}User: ${userText}\nAgent: Reply to the user’s latest message. Use the current ${chatSession.market.symbol} Monad Testnet perpetual market context when relevant.`
+      const url = chatSession.endpoint.endpoint || chatSession.endpoint.url || ''
+      const response = await wrapFetchWithPayment(fetch, client)(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ task }) })
+      if (!response.ok) throw new Error(`request ${response.status}`)
+      const receipt = response.headers.get('payment-response') || response.headers.get('x-payment-response')
+      if (!receipt) throw new Error('missing settlement')
+      const settlement = decodePaymentResponseHeader(receipt) as any
+      if (!settlement.success || settlement.network !== 'eip155:10143') throw new Error('unconfirmed settlement')
+      const raw = await response.text()
+      let result: unknown = raw
+      try { result = JSON.parse(raw) } catch { /* Plain text replies remain readable. */ }
+      const answer = typeof result === 'string' ? result : JSON.stringify(result, null, 2)
+      const paymentTx = settlement.transaction || settlement.txHash
+      setChatMessages((current) => [...current, { role: 'user', text: userText }, { role: 'agent', text: answer, result, paymentTx }])
+      setChatLastResult({ result, paymentTx, request: userText })
+      setChatInput('')
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message.toLowerCase() : ''
+      setNotice(message.includes('user rejected') || message.includes('user denied') ? 'Payment was cancelled.' : 'The agent could not reply. Please try again.')
+    } finally { setChatBusy(false) }
   }
 
   async function onConnect() {
@@ -396,7 +454,7 @@ export default function App() {
     <main className={route === 'home' ? 'home-main' : 'app-main'} id="main-content">
       {route === 'home' && <Home agents={agents.length} available={payableCount} reviews={feedbackCount} loading={loading} onPublish={() => setShowRegister(true)} />}
 
-      {route === 'copy-trading' && <CopyTerminal />}
+      {route === 'copy-trading' && <CopyTerminal agents={agents} markets={markets} onAsk={(agent, market) => requestSignal(market, agent)} />}
 
       {route === 'workspaces' && <section className="workspace-section" id="workspaces">
         <div className="workspace-heading"><div><span>LIVE USE CASES</span><h2>Start with a financial question.</h2><p>Choose a task, review the price, and get an answer with a payment receipt.</p></div><Activity size={34} /></div>
@@ -462,7 +520,9 @@ export default function App() {
 
     {hireRequest && <div className="modal-backdrop"><section className="modal hire-modal"><button className="close-button" disabled={busy !== null} onClick={() => { setHireRequest(null); setSignalMarket(null) }}><X size={19} /></button><span className="modal-kicker">PAID REQUEST</span><h2>{hireRequest.endpoint.name || `Hire ${hireRequest.agent.card?.name}`}</h2><p>{hireRequest.endpoint.name?.toLowerCase().includes('token') ? 'Enter a Monad token contract. The agent will verify it before requesting payment, then return live supply information.' : needsAddress(hireRequest.endpoint.name) ? 'Enter a Monad address. The agent will return its live balance and contract status.' : `Describe the work for ${hireRequest.agent.card?.name}. You can include a market, Buy or Sell, and an amount; you will review any order before it is placed.`}</p><form onSubmit={(event) => void hire(event)}><label htmlFor="hire-input">{needsAddress(hireRequest.endpoint.name) ? 'Monad address' : 'Your request'}</label><input id="hire-input" value={hireInput} onChange={(event) => setHireInput(event.target.value)} placeholder={needsAddress(hireRequest.endpoint.name) ? '0x…' : 'e.g. Review BTC; sell $25 if momentum weakens'} autoFocus required /><div className="payment-summary"><div><Coins size={17} /><span>Payment</span></div><strong>{paymentOf(hireRequest.agent, hireRequest.endpoint) || 'Shown by your wallet'}</strong></div><button className="primary-button wide" disabled={busy !== null || !hireInput.trim()}>{busy === 'hire' ? <LoaderCircle className="spin" size={16} /> : <Wallet size={16} />} Review and pay</button></form></section></div>}
 
-    {hireResult && <div className="modal-backdrop"><section className="modal result-modal"><button className="close-button" onClick={() => setHireResult(null)}><X size={19} /></button><div className="success-icon"><Check size={23} /></div><span className="modal-kicker">WORK DELIVERED</span><h2>Request complete.</h2><p>{hireResult.agent.card?.name} returned a result after the payment settled.</p><ResultView value={hireResult.result} />{hireResult.market && <div className="feedback-box"><div><strong>Want to trade this market?</strong><span>{tradeIntentFromRequest(hireResult.request) ? 'We picked up your requested direction or amount. Check the draft and change anything before placing it.' : 'Choose Buy or Sell and set any amount. Review the order before sending it to Perpl.'}</span></div><button className="primary-button wide" onClick={() => { setTradeIntent(tradeIntentFromRequest(hireResult.request)); setTradeMarket(hireResult.market!) }}>Prepare an order <ArrowRight size={16} /></button></div>}{hireResult.paymentTx && <a className="proof-link" href={`${explorer}/tx/${hireResult.paymentTx}`} target="_blank" rel="noreferrer"><Check size={14} /> Payment confirmed on Monad <ArrowUpRight size={13} /></a>}{!feedbackDone ? <div className="feedback-box"><div><strong>How was the result?</strong><span>Your review helps others choose the right agent.</span></div><div className="stars">{[1, 2, 3, 4, 5].map((value) => <button key={value} className={rating && value <= rating ? 'active' : ''} onClick={() => setRating(value)} aria-label={`${value} stars`}><Star size={21} fill="currentColor" /></button>)}</div><button className="primary-button wide" disabled={rating === '' || busy !== null} onClick={() => void sendFeedback()}>{busy === 'feedback' ? <LoaderCircle className="spin" size={16} /> : null}Record feedback</button></div> : <div className="feedback-complete"><Check size={17} /><div><strong>Reputation updated</strong>{hireResult.feedbackTx && <a href={`${explorer}/tx/${hireResult.feedbackTx}`} target="_blank" rel="noreferrer">View transaction <ArrowUpRight size={12} /></a>}</div></div>}</section></div>}
+    {hireResult && !chatSession && <div className="modal-backdrop"><section className="modal result-modal"><button className="close-button" onClick={() => setHireResult(null)}><X size={19} /></button><div className="success-icon"><Check size={23} /></div><span className="modal-kicker">WORK DELIVERED</span><h2>Request complete.</h2><p>{hireResult.agent.card?.name} returned a result after the payment settled.</p><ResultView value={hireResult.result} />{hireResult.market && <div className="feedback-box"><div><strong>Want to trade this market?</strong><span>{tradeIntentFromRequest(hireResult.request, hireResult.result) ? 'We picked up your requested direction or amount. Check the draft and change anything before placing it.' : 'Choose Buy or Sell and set any amount. Review the order before sending it to Perpl.'}</span></div><button className="primary-button wide" onClick={() => { setTradeIntent(tradeIntentFromRequest(hireResult.request, hireResult.result)); setTradeMarket(hireResult.market!) }}>Prepare an order <ArrowRight size={16} /></button></div>}{hireResult.paymentTx && <a className="proof-link" href={`${explorer}/tx/${hireResult.paymentTx}`} target="_blank" rel="noreferrer"><Check size={14} /> Payment confirmed on Monad <ArrowUpRight size={13} /></a>}{!feedbackDone ? <div className="feedback-box"><div><strong>How was the result?</strong><span>Your review helps others choose the right agent.</span></div><div className="stars">{[1, 2, 3, 4, 5].map((value) => <button key={value} className={rating && value <= rating ? 'active' : ''} onClick={() => setRating(value)} aria-label={`${value} stars`}><Star size={21} fill="currentColor" /></button>)}</div><button className="primary-button wide" disabled={rating === '' || busy !== null} onClick={() => void sendFeedback()}>{busy === 'feedback' ? <LoaderCircle className="spin" size={16} /> : null}Record feedback</button></div> : <div className="feedback-complete"><Check size={17} /><div><strong>Reputation updated</strong>{hireResult.feedbackTx && <a href={`${explorer}/tx/${hireResult.feedbackTx}`} target="_blank" rel="noreferrer">View transaction <ArrowUpRight size={12} /></a>}</div></div>}</section></div>}
+
+    {chatSession && <div className="modal-backdrop"><section className="modal agent-chat-modal" aria-label={`Chat with ${chatSession.agent.card?.name}`}><button className="close-button" disabled={chatBusy} onClick={closeChat}><X size={19} /></button><span className="modal-kicker">MARKET CONVERSATION · {chatSession.market.symbol}</span><h2>Ask {chatSession.agent.card?.name}.</h2><p>Each message is a separate paid request at the agent’s listed rate. You approve each payment in your wallet.</p><div className="agent-chat-messages">{chatMessages.length === 0 && <div className="agent-chat-empty">Start with a question about {chatSession.market.symbol}. You can ask follow-up questions, too.</div>}{chatMessages.map((message, index) => <article className={`agent-chat-message ${message.role}`} key={`${index}-${message.role}`}><span>{message.role === 'user' ? 'You' : chatSession.agent.card?.name}</span>{message.role === 'agent' && message.result && typeof message.result === 'object' && !Array.isArray(message.result) ? <ResultView value={message.result} /> : <p>{message.text}</p>}{message.paymentTx && <a className="proof-link" href={`${explorer}/tx/${message.paymentTx}`} target="_blank" rel="noreferrer">Payment confirmed <ArrowUpRight size={12} /></a>}</article>)}</div><form className="agent-chat-form" onSubmit={(event) => void sendChatMessage(event)}><label htmlFor="agent-chat-input">Your message</label><textarea id="agent-chat-input" rows={3} value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder={`Ask about ${chatSession.market.symbol}…`} required /><div className="agent-chat-price">Listed price: {paymentOf(chatSession.agent, chatSession.endpoint) || 'Shown in your wallet'} per message</div><button className="primary-button wide" disabled={chatBusy || !chatInput.trim()}>{chatBusy ? <LoaderCircle className="spin" size={16} /> : <ArrowRight size={16} />}Send message and pay</button></form><p className="perpl-network-note">Any trade remains a draft until you review and place it.</p></section></div>}
 
     {tradeMarket && <PerplTrader market={tradeMarket} intent={tradeIntent} walletAddress={walletAddress} onConnect={onConnect} onClose={() => { setTradeMarket(null); setTradeIntent(undefined) }} onNotice={setNotice} />}
 

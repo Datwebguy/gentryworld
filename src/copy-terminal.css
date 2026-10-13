@@ -57,6 +57,34 @@
 .copy-empty button { margin-top: 10px; padding: 0; display: flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--indigo); font-size: 11px; font-weight: 700; }
 .copy-skeleton { min-height: 218px; background: linear-gradient(100deg, var(--white), var(--paper-2), var(--white)); background-size: 200% 100%; animation: copy-shimmer 1.3s linear infinite; }
 @keyframes copy-shimmer { to { background-position-x: -200%; } }
+.copy-market-select { min-width: 180px; height: 43px; padding: 0 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--white); color: var(--ink); font: inherit; font-size: 12px; }
+.copy-agent-card { min-height: 300px; display: flex; flex-direction: column; }
+.copy-following-pill { margin-left: auto; display: flex; align-items: center; gap: 6px; padding: 6px 9px; border-radius: 99px; background: var(--paper-2); color: var(--muted); font-size: 10px; }
+.copy-following-pill i { width: 6px; height: 6px; border-radius: 50%; background: #43b875; }
+.copy-agent-description { min-height: 48px; margin: 16px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+.copy-agent-tags { min-height: 24px; display: flex; flex-wrap: wrap; gap: 6px; }
+.copy-agent-tags span { padding: 4px 7px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font: 9px var(--mono); }
+.copy-agent-meta { margin: auto 0 15px; padding-top: 12px; display: grid; grid-template-columns: 1fr auto; gap: 8px; border-top: 1px solid var(--line); font-size: 10px; }
+.copy-agent-meta span { color: var(--muted); }
+.copy-agent-meta strong { display: inline-flex; align-items: center; gap: 4px; color: var(--ink); font-weight: 650; }
+.copy-agent-actions { display: flex; gap: 8px; }
+.copy-agent-actions > * { min-height: 40px; flex: 1; justify-content: center; }
+.agent-chat-modal { width: min(720px, 100%); padding: 30px; }
+.agent-chat-modal > h2 { margin: 13px 42px 7px 0; font-size: 28px; letter-spacing: -.05em; }
+.agent-chat-modal > p { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.agent-chat-messages { height: min(42vh, 420px); min-height: 170px; margin: 18px 0; padding: 14px; overflow: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--paper); }
+.agent-chat-empty { padding: 18px; color: var(--muted); font-size: 12px; text-align: center; }
+.agent-chat-message { width: fit-content; max-width: 90%; margin: 0 0 12px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--white); }
+.agent-chat-message.user { margin-left: auto; border-color: color-mix(in srgb, var(--indigo) 35%, var(--line)); }
+.agent-chat-message > span { display: block; margin-bottom: 6px; color: var(--muted); font: 10px var(--mono); }
+.agent-chat-message > p { margin: 0; color: var(--ink); font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-chat-message .result-grid { margin: 4px 0 0; }
+.agent-chat-message .proof-link { margin-top: 8px; }
+.agent-chat-form { display: grid; gap: 8px; }
+.agent-chat-form label { color: var(--ink); font-size: 11px; font-weight: 650; }
+.agent-chat-form textarea { width: 100%; resize: vertical; border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--white); color: var(--ink); font: inherit; font-size: 12px; line-height: 1.5; }
+.agent-chat-price { color: var(--muted); font-size: 10px; }
+@media (max-width: 620px) { .copy-market-select { order: 3; width: 100%; } .copy-agent-actions { flex-direction: column; } .agent-chat-modal { padding: 23px 18px; } }
 .copy-overlay { position: fixed; inset: 0; z-index: 130; display: flex; justify-content: flex-end; background: #1117117a; backdrop-filter: blur(5px); }
 .copy-drawer { position: relative; width: min(610px, 100%); height: 100%; max-height: 100vh; padding: 38px 34px 48px; overflow-y: auto; background: var(--white); box-shadow: -20px 0 70px #0002; animation: copy-drawer-in .24s ease both; }
 @keyframes copy-drawer-in { from { transform: translateX(35px); opacity: .7; } to { transform: translateX(0); opacity: 1; } }

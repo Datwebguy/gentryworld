@@ -105,7 +105,23 @@ app.post('/api/perpl/account', async (req, res) => {
     const payload = await response.json().catch(() => ({}))
     if (!response.ok) return res.status(response.status).json({ error: response.status === 401 ? 'Perpl could not verify these credentials.' : response.status === 403 ? 'This Perpl key cannot read account details.' : response.status === 404 ? 'No Perpl trading account is linked to this wallet yet.' : 'Perpl account details are unavailable.' })
     const accounts = Array.isArray(payload.as) ? payload.as : []
-    res.json({ address: payload.addr, block: payload.sn, accounts: accounts.map((account) => ({ id: account.id, forwarding: Boolean(account.fw), lastRequestId: Number(account.lfr || 0), balance: account.b, equity: account.eq })) })
+    const [positionsResponse, contextResponse] = await Promise.all([
+      signedPerplRequest(credentials, 'GET', '/v1/trading/positions'),
+      fetch('https://testnet.perpl.xyz/api/v1/pub/context', { signal: AbortSignal.timeout(8000) }),
+    ])
+    const positionsPayload = positionsResponse.ok ? await positionsResponse.json().catch(() => ({})) : {}
+    const context = contextResponse.ok ? await contextResponse.json().catch(() => ({})) : {}
+    const markets = new Map((context.markets || []).map((market) => [Number(market.id), market]))
+    const positions = (positionsPayload.d || []).filter((position) => Number(position.st) === 1)
+      .map((position) => {
+        const market = markets.get(Number(position.mkt))
+        const sizeDecimals = Number(market?.config?.size_decimals || 0)
+        const priceDecimals = Number(market?.config?.price_decimals || 0)
+        const mark = Number(market?.state?.mrk || market?.state?.mid || 0) / (10 ** priceDecimals)
+        const size = Number(position.s || 0) / (10 ** sizeDecimals)
+        return { id: Number(position.pid), accountId: Number(position.acc), marketId: Number(position.mkt), symbol: market?.symbol || `Market ${position.mkt}`, side: Number(position.sd) === 1 ? 'long' : 'short', size, entryPrice: Number(position.ep || 0) / (10 ** priceDecimals), mark, notional: size * mark, leverage: Number(position.lv || 100) / 100 }
+      })
+    res.json({ address: payload.addr, block: payload.sn, accounts: accounts.map((account) => ({ id: account.id, forwarding: Boolean(account.fw), lastRequestId: Number(account.lfr || 0), balance: account.b, equity: account.eq })), positions })
   } catch (error) {
     res.status(400).json({ error: error instanceof Error && error.message.startsWith('Enter a valid') ? error.message : 'Could not read the Perpl account.' })
   }
@@ -113,8 +129,8 @@ app.post('/api/perpl/account', async (req, res) => {
 
 app.post('/api/perpl/order', async (req, res) => {
   try {
-    const { apiKey, privateKey, address, marketId, direction, notional, leverage } = req.body || {}
-    if (!/^0x[a-f\d]{40}$/i.test(String(address || '')) || !Number.isInteger(Number(marketId)) || !['long', 'short'].includes(direction) || !Number.isFinite(Number(notional)) || Number(notional) <= 0 || !Number.isFinite(Number(leverage))) {
+    const { apiKey, privateKey, address, marketId, direction, action = 'open', positionId, notional, leverage } = req.body || {}
+    if (!/^0x[a-f\d]{40}$/i.test(String(address || '')) || !Number.isInteger(Number(marketId)) || !['long', 'short'].includes(direction) || !['open', 'close'].includes(action) || !Number.isFinite(Number(notional)) || Number(notional) <= 0 || !Number.isFinite(Number(leverage))) {
       return res.status(400).json({ error: 'Review the wallet, market, size, direction, and leverage.' })
     }
     const credentials = perplCredentials({ apiKey, privateKey })
@@ -137,7 +153,17 @@ app.post('/api/perpl/order', async (req, res) => {
     if (lev < 1 || lev > maxLeverage || lev > 100) return res.status(400).json({ error: `Leverage must be between 1x and ${Math.floor(maxLeverage)}x for this market.` })
     const decimals = Number(market.config.size_decimals || 0)
     const scale = 10 ** decimals
-    const scaledSize = Math.floor((Number(notional) / mark) * scale)
+    let scaledSize = Math.floor((Number(notional) / mark) * scale)
+    let orderType = direction === 'long' ? 1 : 2
+    if (action === 'close') {
+      const positionsResponse = await signedPerplRequest(credentials, 'GET', '/v1/trading/positions')
+      const positions = positionsResponse.ok ? await positionsResponse.json().catch(() => ({})) : {}
+      const position = (positions.d || []).find((item) => Number(item.pid) === Number(positionId) && Number(item.acc) === Number(account.id) && Number(item.mkt) === Number(market.id) && Number(item.st) === 1)
+      if (!position) return res.status(409).json({ error: 'That position has changed or is already closed. Refresh positions and try again.' })
+      const positionSize = Number(position.s || 0)
+      if (!Number.isSafeInteger(scaledSize) || scaledSize <= 0 || scaledSize > positionSize) return res.status(400).json({ error: 'Close size exceeds the selected open position.' })
+      orderType = Number(position.sd) === 1 ? 3 : 4
+    }
     if (!Number.isSafeInteger(scaledSize) || scaledSize <= 0) return res.status(400).json({ error: 'Order size is below this market’s supported precision.' })
     const actualSize = scaledSize / scale
     const actualNotional = actualSize * mark
@@ -145,7 +171,7 @@ app.post('/api/perpl/order', async (req, res) => {
     const takerFees = Array.isArray(market.config.taker_fees) ? market.config.taker_fees : []
     const feeMicros = Number(takerFees[accountFeeTier] ?? market.config.taker_fee ?? 0)
     const requestId = Math.max(Number(account.lfr || 0), 0) + 1
-    const spec = { rq: requestId, mkt: Number(market.id), acc: Number(account.id), t: direction === 'long' ? 1 : 2, p: 0, s: scaledSize, ms: Number(market.order_max_market_slippage_bps || 0), fl: 4, lv: Math.round(lev * 100), lb: 0 }
+    const spec = { rq: requestId, mkt: Number(market.id), acc: Number(account.id), t: orderType, p: 0, s: scaledSize, ms: Number(market.order_max_market_slippage_bps || 0), fl: 4, lv: Math.round(lev * 100), lb: 0 }
     const body = JSON.stringify({ d: [spec] })
     const submittedAt = Date.now()
     const submitResponse = await signedPerplRequest(credentials, 'POST', '/v1/trading/orders', body)
@@ -180,7 +206,7 @@ app.post('/api/perpl/order', async (req, res) => {
         }
       }
     }
-    res.json({ accepted: true, requestId, market: market.symbol, direction, mark, size: actualSize, notional: actualNotional, leverage: lev, estimatedCollateral: actualNotional / lev, estimatedTakerFee: actualNotional * feeMicros / 1_000_000, slippageBps: spec.ms, status: order ? { code: Number(order.st), reason: Number(order.sr), filledSize: Number(order.fs || 0) / scale, averageFillPrice: Number(order.fp || 0) / (10 ** Number(market.config.price_decimals || 0)), orderId: Number(order.oid || 0), requestId: Number(order.rq) } : null })
+    res.json({ accepted: true, requestId, market: market.symbol, direction: action === 'close' ? `close-${direction}` : direction, action, mark, size: actualSize, notional: actualNotional, leverage: lev, estimatedCollateral: actualNotional / lev, estimatedTakerFee: actualNotional * feeMicros / 1_000_000, slippageBps: spec.ms, status: order ? { code: Number(order.st), reason: Number(order.sr), filledSize: Number(order.fs || 0) / scale, averageFillPrice: Number(order.fp || 0) / (10 ** Number(market.config.price_decimals || 0)), orderId: Number(order.oid || 0), requestId: Number(order.rq) } : null })
   } catch (error) {
     res.status(400).json({ error: error instanceof Error && error.message.startsWith('Enter a valid') ? error.message : 'Perpl could not complete this request.' })
   }
