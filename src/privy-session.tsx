@@ -12,6 +12,19 @@ const monadTestnet = defineChain({
   testnet: true,
 })
 
+// Privy's signing confirmation UI serializes typed data before showing it.
+// x402's EVM scheme can supply integer fields as bigint, which JSON cannot
+// serialize. EIP-712 accepts decimal strings for integer values, preserving
+// the exact signed value while keeping the confirmation screen renderable.
+function toPrivySerializable(value: unknown): unknown {
+  if (typeof value === 'bigint') return value.toString(10)
+  if (Array.isArray(value)) return value.map(toPrivySerializable)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, toPrivySerializable(item)]))
+  }
+  return value
+}
+
 function PrivyWalletSession({ children }: { children: ReactNode }) {
   const { ready, authenticated, user, logout, login } = usePrivy()
   const { connectOrCreateWallet } = useConnectOrCreateWallet()
@@ -49,7 +62,8 @@ function PrivyWalletSession({ children }: { children: ReactNode }) {
       const fraction = (units % 1_000_000n).toString().padStart(6, '0').replace(/0+$/, '')
       amount = fraction ? `${whole}.${fraction}` : String(whole)
     }
-    const { signature } = await signEmbeddedTypedData(data as any, {
+    const serializableData = toPrivySerializable(data) as TypedDataRequest
+    const { signature } = await signEmbeddedTypedData(serializableData as any, {
       uiOptions: {
         title: 'Confirm agent payment',
         description: `Authorize ${amount} USDC for this request on Monad Testnet. The payment settles after approval; signing itself does not charge gas.`,
