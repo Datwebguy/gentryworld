@@ -1,6 +1,7 @@
 import { Home } from './Home'
 import { CopyTerminal } from './CopyTerminal'
 import { PerplTrader, type TradeIntent } from './PerplTrader'
+import { ChatErrorBoundary } from './ChatErrorBoundary'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, ArrowRight, ArrowUpRight, ArrowUpRightFromSquare, Check, Moon, Sun,
@@ -338,7 +339,11 @@ export default function App() {
     const userText = chatInput.trim()
     setChatBusy(true); setNotice('')
     try {
-      if (!connectedAddress) { await openWallet(); return }
+      if (!connectedAddress || !walletProvider) {
+        if (authenticated) { setNotice('Your GentrY wallet is still getting ready. Wait a moment, then try again.'); return }
+        if (!walletReady) { setNotice('Wallet setup is still loading. Please try again shortly.'); return }
+        await openWallet(); return
+      }
       const { address, wallet } = await connectWallet(walletProvider, connectedAddress)
       setWalletAddress(address)
       const signer = { address, signTypedData: async (message: any) => signEmbeddedTypedData
@@ -370,10 +375,12 @@ export default function App() {
 
   async function onConnect() {
     if (!connectedAddress) {
+      if (authenticated) return setNotice('Your GentrY wallet is still getting ready. Wait a moment, then try again.')
       if (!walletReady) return setNotice('Wallet connection is being set up. Please try again soon.')
       try { await openWallet() } catch { setNotice('Wallet connection was cancelled.') }
       return
     }
+    if (!walletProvider) return setNotice('Your GentrY wallet is still getting ready. Wait a moment, then try again.')
     try { setWalletAddress((await connectWallet(walletProvider, connectedAddress)).address) }
     catch { setNotice('Switch to Monad Testnet in your wallet and try again.') }
   }
@@ -413,7 +420,11 @@ export default function App() {
     if (!input) return
     setBusy('hire'); setNotice(''); setFeedbackDone(false)
     try {
-      if (!connectedAddress) { await openWallet(); return }
+      if (!connectedAddress || !walletProvider) {
+        if (authenticated) { setNotice('Your GentrY wallet is still getting ready. Wait a moment, then try again.'); return }
+        if (!walletReady) { setNotice('Wallet setup is still loading. Please try again shortly.'); return }
+        await openWallet(); return
+      }
       const { address, wallet } = await connectWallet(walletProvider, connectedAddress)
       setWalletAddress(address)
       const signer = {
@@ -554,7 +565,7 @@ export default function App() {
 
     {hireResult && !chatSession && <div className="modal-backdrop"><section className="modal result-modal"><button className="close-button" onClick={() => setHireResult(null)}><X size={19} /></button><div className="success-icon"><Check size={23} /></div><span className="modal-kicker">WORK DELIVERED</span><h2>Request complete.</h2><p>{hireResult.agent.card?.name} returned a result after the payment settled.</p><ResultView value={hireResult.result} />{hireResult.market && <div className="feedback-box"><div><strong>Want to trade this market?</strong><span>{tradeIntentFromRequest(hireResult.request, hireResult.result) ? 'We picked up your requested direction or amount. Check the draft and change anything before placing it.' : 'Choose Buy or Sell and set any amount. Review the order before sending it to Perpl.'}</span></div><button className="primary-button wide" onClick={() => { setTradeIntent(tradeIntentFromRequest(hireResult.request, hireResult.result)); setTradeMarket(hireResult.market!) }}>Prepare an order <ArrowRight size={16} /></button></div>}{hireResult.paymentTx && <a className="proof-link" href={`${explorer}/tx/${hireResult.paymentTx}`} target="_blank" rel="noreferrer"><Check size={14} /> Payment confirmed on Monad <ArrowUpRight size={13} /></a>}{!feedbackDone ? <div className="feedback-box"><div><strong>How was the result?</strong><span>Your review helps others choose the right agent.</span></div><div className="stars">{[1, 2, 3, 4, 5].map((value) => <button key={value} className={rating && value <= rating ? 'active' : ''} onClick={() => setRating(value)} aria-label={`${value} stars`}><Star size={21} fill="currentColor" /></button>)}</div><button className="primary-button wide" disabled={rating === '' || busy !== null} onClick={() => void sendFeedback()}>{busy === 'feedback' ? <LoaderCircle className="spin" size={16} /> : null}Record feedback</button></div> : <div className="feedback-complete"><Check size={17} /><div><strong>Reputation updated</strong>{hireResult.feedbackTx && <a href={`${explorer}/tx/${hireResult.feedbackTx}`} target="_blank" rel="noreferrer">View transaction <ArrowUpRight size={12} /></a>}</div></div>}</section></div>}
 
-    {chatSession && <div className="modal-backdrop"><section className="modal agent-chat-modal" aria-label={`Chat with ${chatSession.agent.card?.name}`}><button className="close-button" disabled={chatBusy} onClick={closeChat}><X size={19} /></button><span className="modal-kicker">MARKET CONVERSATION · {chatSession.market.symbol}</span><h2>Ask {chatSession.agent.card?.name}.</h2><p>Each message is a separate paid request at the agent’s listed rate. You approve each payment in your wallet.</p><div className="agent-chat-messages">{chatMessages.length === 0 && <div className="agent-chat-empty">Start with a question about {chatSession.market.symbol}. You can ask follow-up questions, too.</div>}{chatMessages.map((message, index) => <article className={`agent-chat-message ${message.role}`} key={`${index}-${message.role}`}><span>{message.role === 'user' ? 'You' : chatSession.agent.card?.name}</span>{message.role === 'agent' && message.result && typeof message.result === 'object' && !Array.isArray(message.result) ? <ResultView value={message.result} /> : <p>{message.text}</p>}{message.paymentTx && <a className="proof-link" href={`${explorer}/tx/${message.paymentTx}`} target="_blank" rel="noreferrer">Payment confirmed <ArrowUpRight size={12} /></a>}</article>)}</div><form className="agent-chat-form" onSubmit={(event) => void sendChatMessage(event)}><label htmlFor="agent-chat-input">Your message</label><textarea id="agent-chat-input" rows={3} value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder={`Ask about ${chatSession.market.symbol}…`} required /><div className="agent-chat-price">Listed price: {paymentOf(chatSession.agent, chatSession.endpoint) || 'Shown in your wallet'} per message</div><button className="primary-button wide" disabled={chatBusy || !chatInput.trim()}>{chatBusy ? <LoaderCircle className="spin" size={16} /> : <ArrowRight size={16} />}Send message and pay</button></form><p className="perpl-network-note">Any trade remains a draft until you review and place it.</p></section></div>}
+    {chatSession && <ChatErrorBoundary onClose={() => { setChatSession(null); setChatInput(''); setChatMessages([]); setChatLastResult(null) }}><div className="modal-backdrop"><section className="modal agent-chat-modal" aria-label={`Chat with ${chatSession.agent.card?.name}`}><button className="close-button" disabled={chatBusy} onClick={closeChat}><X size={19} /></button><span className="modal-kicker">MARKET CONVERSATION · {chatSession.market.symbol}</span><h2>Ask {chatSession.agent.card?.name}.</h2><p>Each message is a separate paid request at the agent’s listed rate. You approve each payment in your wallet.</p><div className="agent-chat-messages">{chatMessages.length === 0 && <div className="agent-chat-empty">Start with a question about {chatSession.market.symbol}. You can ask follow-up questions, too.</div>}{chatMessages.map((message, index) => <article className={`agent-chat-message ${message.role}`} key={`${index}-${message.role}`}><span>{message.role === 'user' ? 'You' : chatSession.agent.card?.name}</span>{message.role === 'agent' && message.result && typeof message.result === 'object' && !Array.isArray(message.result) ? <ResultView value={message.result} /> : <p>{message.text}</p>}{message.paymentTx && <a className="proof-link" href={`${explorer}/tx/${message.paymentTx}`} target="_blank" rel="noreferrer">Payment confirmed <ArrowUpRight size={12} /></a>}</article>)}</div><form className="agent-chat-form" onSubmit={(event) => void sendChatMessage(event)}><label htmlFor="agent-chat-input">Your message</label><textarea id="agent-chat-input" rows={3} value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder={`Ask about ${chatSession.market.symbol}…`} required /><div className="agent-chat-price">Listed price: {paymentOf(chatSession.agent, chatSession.endpoint) || 'Shown in your wallet'} per message</div><button className="primary-button wide" disabled={chatBusy || !chatInput.trim()}>{chatBusy ? <LoaderCircle className="spin" size={16} /> : <ArrowRight size={16} />}Send message and pay</button></form><p className="perpl-network-note">Any trade remains a draft until you review and place it.</p></section></div></ChatErrorBoundary>}
 
     {tradeMarket && <PerplTrader market={tradeMarket} intent={tradeIntent} walletAddress={walletAddress} onConnect={onConnect} onClose={() => { setTradeMarket(null); setTradeIntent(undefined) }} onNotice={setNotice} />}
 
