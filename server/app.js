@@ -258,8 +258,13 @@ app.post('/api/perpl/account', async (req, res) => {
   try {
     const credentials = perplCredentials(req.body)
     const response = await signedPerplRequest(credentials, 'GET', '/v1/trading/wallet')
-    const payload = await response.json().catch(() => ({}))
-    if (!response.ok) return res.status(response.status).json({ error: response.status === 401 ? 'Perpl could not verify these credentials.' : response.status === 403 ? 'This Perpl key cannot read account details.' : response.status === 404 ? 'No Perpl trading account is linked to this wallet yet.' : 'Perpl account details are unavailable.' })
+    const responseText = await response.text()
+    let payload = {}
+    try { payload = JSON.parse(responseText) } catch { /* Keep upstream errors private and concise. */ }
+    if (!response.ok) {
+      if (response.status === 451) console.error('[perpl-upstream-block]', 'wallet', response.status, responseText.slice(0, 400))
+      return res.status(response.status).json({ error: response.status === 401 ? 'Perpl could not verify these credentials.' : response.status === 403 ? 'This Perpl key cannot read account details.' : response.status === 404 ? 'No Perpl trading account is linked to this wallet yet.' : response.status === 451 ? 'Perpl blocked this request from GentrY’s server (451).' : 'Perpl account details are unavailable.' })
+    }
     const accounts = Array.isArray(payload.as) ? payload.as : []
     const [positionsResponse, fillsResponse, accountHistoryResponse, contextResponse] = await Promise.all([
       signedPerplRequest(credentials, 'GET', '/v1/trading/positions'),
@@ -317,7 +322,10 @@ app.post('/api/perpl/order', async (req, res) => {
     const credentials = perplCredentials({ apiKey, privateKey })
     const walletResponse = await signedPerplRequest(credentials, 'GET', '/v1/trading/wallet')
     const wallet = await walletResponse.json().catch(() => ({}))
-    if (!walletResponse.ok) return res.status(walletResponse.status).json({ error: walletResponse.status === 401 ? 'Perpl could not verify these credentials.' : walletResponse.status === 403 ? 'This Perpl key cannot read account details.' : 'Perpl account details are unavailable.' })
+    if (!walletResponse.ok) {
+      if (walletResponse.status === 451) console.error('[perpl-upstream-block]', 'order', walletResponse.status)
+      return res.status(walletResponse.status).json({ error: walletResponse.status === 401 ? 'Perpl could not verify these credentials.' : walletResponse.status === 403 ? 'This Perpl key cannot read account details.' : walletResponse.status === 451 ? 'Perpl blocked this request from GentrY’s server (451).' : 'Perpl account details are unavailable.' })
+    }
     if (String(wallet.addr || '').toLowerCase() !== address.toLowerCase()) return res.status(403).json({ error: 'The connected wallet does not match this Perpl API key.' })
     const account = (wallet.as || []).find((item) => Number(item.id) === Number(req.body.accountId))
     if (!account) return res.status(400).json({ error: 'Choose an account returned by Perpl.' })
