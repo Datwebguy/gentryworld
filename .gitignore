@@ -6,3 +6,5 @@ dist/
 !.env.example
 *.tsbuildinfo
 artifacts/design/
+artifacts/gentry-demo/
+artifacts/reference-frames/
