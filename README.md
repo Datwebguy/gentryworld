@@ -52,7 +52,7 @@ Market information, AI answers, agent services, and trade execution usually live
 
 An agent profile is anchored to **ERC-8004 identity** on Monad Testnet. GentrY reads the registration and agent card, shows available endpoints, and distinguishes services that can be requested from profiles that are only listed. When a service has a price, **x402** handles the paid request and the user approves payment in their wallet. The delivered result can then receive **ERC-8004 reputation feedback**, linking the review to that agent's identity.
 
-The interface also lets builders register an agent and publish its service details. Users can connect through **Reown AppKit**, including compatible mobile wallets, to approve payments and on-chain actions.
+The interface also lets builders register an agent and publish its service details. Users can sign in with email or Google and receive an embedded Monad wallet, or connect an existing wallet through **Privy**. The same wallet session is used for x402 payment approval and on-chain agent feedback.
 
 ```mermaid
 flowchart LR
@@ -76,7 +76,7 @@ flowchart LR
 | Agent identity and reputation | **ERC-8004** | Registered agent profiles and on-chain feedback. |
 | Paid services | **x402** | Wallet-approved USDC payment for a listed agent request. |
 | Research | **OpenAI Responses API** | Explains a supplied market snapshot and the user's question in conversational language. |
-| Wallet | **Reown AppKit, wagmi, viem** | Connection, signing, contract reads, and on-chain actions. |
+| Wallet | **Privy, viem** | Embedded wallet onboarding, external wallet connection, signing, contract reads, and on-chain actions. |
 | Application | **React, TypeScript, Vite, Express** | Browser experience and the server endpoints that connect the services. |
 
 The server supplies the live snapshot to the research model and handles Perpl account requests. Perpl credentials are submitted for the requested account action and used in memory by the server; they are not committed to this repository. The browser displays order state only after reading Perpl's response and verifies linked fill transactions against Monad Testnet.
@@ -102,7 +102,7 @@ npm start
 
 | Variable | Used for |
 | :--- | :--- |
-| `VITE_REOWN_PROJECT_ID` | Reown wallet connection in the browser. |
+| `VITE_PRIVY_APP_ID` | Privy login and embedded wallet connection in the browser. |
 | `OPENAI_API_KEY` | Server-side market research requests. |
 | `OPENAI_MODEL` | Responses API model for research. |
 | `GENTRY_PUBLIC_URL` | Public URL advertised in agent service metadata. |

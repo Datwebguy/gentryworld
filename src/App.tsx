@@ -173,7 +173,7 @@ function ResultView({ value }: { value: unknown }) {
 }
 
 export default function App() {
-  const { address: connectedAddress, provider: walletProvider, ready: walletReady, openWallet } = useWalletSession()
+  const { address: connectedAddress, provider: walletProvider, ready: walletReady, authenticated, identity, openWallet, logout } = useWalletSession()
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try { const saved = localStorage.getItem('gentry:theme'); if (saved === 'dark' || saved === 'light') return saved } catch { /* Storage may be restricted. */ }
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
@@ -192,6 +192,7 @@ export default function App() {
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<'all' | 'payable' | 'services'>('payable')
   const [walletAddress, setWalletAddress] = useState('')
+  const [accountMenu, setAccountMenu] = useState(false)
   useEffect(() => { setWalletAddress(connectedAddress || '') }, [connectedAddress])
   const [selected, setSelected] = useState<Agent | null>(null)
   const [hireRequest, setHireRequest] = useState<{ agent: Agent; endpoint: AgentEndpoint } | null>(null)
@@ -452,7 +453,7 @@ export default function App() {
     <a className="skip-link" href="#main-content">Skip to content</a><header className="topbar">
       <a className="brand" href="#top"><span className="brand-mark"><Command size={18} strokeWidth={2.5} /></span><span>GentrY</span></a>
       <nav><a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a><a className={route === 'copy-trading' ? 'active' : ''} href="#copy-trading">Copy</a><a className={route === 'workspaces' ? 'active' : ''} href="#workspaces">Workspaces</a><a className={route === 'market' ? 'active' : ''} href="#network">Agents</a><a className={route === 'reputation' ? 'active' : ''} href="#leaderboard">Reputation</a></nav>
-      <div className="top-actions"><button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button><button className="wallet-button" aria-label={walletAddress ? `Connected wallet ${walletAddress}` : 'Connect wallet'} onClick={() => void onConnect()}><Wallet size={15} />{walletAddress ? shortAddress(walletAddress) : 'Connect'}</button></div>
+      <div className="top-actions"><button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button><button className="wallet-button" aria-label={walletAddress ? `Account ${walletAddress}` : 'Sign in or connect wallet'} onClick={() => walletAddress ? setAccountMenu((open) => !open) : void onConnect()}><Wallet size={15} />{walletAddress ? shortAddress(walletAddress) : 'Connect'}</button>{accountMenu && authenticated && <div className="wallet-account-menu"><span>GentrY account</span><strong>{identity || 'Wallet account'}</strong><small>{walletAddress}</small><button onClick={() => { setAccountMenu(false); setWalletAddress(''); void logout() }}>Sign out</button></div>}</div>
     </header>
 
     <main className={route === 'home' ? 'home-main' : 'app-main'} id="main-content">
