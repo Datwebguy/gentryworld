@@ -207,6 +207,7 @@ app.post('/api/perpl/order', async (req, res) => {
     const orderStatus = acknowledgment.statuses?.[0]
     if (acknowledgment.status?.code !== 0 || !orderStatus || orderStatus.code !== 0) return res.status(422).json({ error: orderStatus?.error || acknowledgment.status?.error || 'Perpl declined the order.' })
     let order = null
+    let matchedFills = []
     for (let attempt = 0; attempt < 5 && !order; attempt++) {
       if (attempt) await new Promise((resolve) => setTimeout(resolve, 700))
       const [historyResponse, fillsResponse] = await Promise.all([
@@ -217,23 +218,30 @@ app.post('/api/perpl/order', async (req, res) => {
         const history = await historyResponse.json().catch(() => ({}))
         order = history.d?.find((item) => Number(item.rq) === requestId && Number(item.acc) === Number(account.id) && Number(item.mkt) === Number(market.id)) || null
       }
+      if (fillsResponse.ok) {
+        const fills = await fillsResponse.json().catch(() => ({}))
+        matchedFills = (fills.d || []).filter((item) => Number(item.acc) === Number(account.id) && Number(item.mkt) === Number(market.id) && Number(item.t) === spec.t && Number(item.at?.t) >= submittedAt - 1000 && Number(item.at?.t) <= submittedAt + 15_000)
+      }
       // Perpl may publish the fill before its order-history view catches up.
       // A fill carries no request ID, so only associate a recent fill matching
       // this account, market, side, and the requested size, within this request's
       // short settlement window.
-      if (!order && fillsResponse.ok) {
-        const fills = await fillsResponse.json().catch(() => ({}))
-        const recent = (fills.d || []).filter((item) => Number(item.acc) === Number(account.id) && Number(item.mkt) === Number(market.id) && Number(item.t) === spec.t && Number(item.at?.t) >= submittedAt - 1000 && Number(item.at?.t) <= submittedAt + 15_000)
-        if (recent.length) {
-          const orderId = Number(recent[0].oid)
-          const sameOrder = recent.filter((item) => Number(item.oid) === orderId)
-          const filledSize = sameOrder.reduce((sum, item) => sum + Number(item.s || 0), 0)
-          const averagePrice = filledSize ? sameOrder.reduce((sum, item) => sum + Number(item.p || 0) * Number(item.s || 0), 0) / filledSize : 0
-          order = { st: filledSize >= scaledSize ? 4 : 3, sr: 0, fs: filledSize, fp: averagePrice, oid: orderId, rq: requestId }
-        }
+      if (!order && matchedFills.length) {
+        const orderId = Number(matchedFills[0].oid)
+        const sameOrder = matchedFills.filter((item) => Number(item.oid) === orderId)
+        const filledSize = sameOrder.reduce((sum, item) => sum + Number(item.s || 0), 0)
+        const averagePrice = filledSize ? sameOrder.reduce((sum, item) => sum + Number(item.p || 0) * Number(item.s || 0), 0) / filledSize : 0
+        order = { st: filledSize >= scaledSize ? 4 : 3, sr: 0, fs: filledSize, fp: averagePrice, oid: orderId, rq: requestId }
       }
     }
-    res.json({ accepted: true, requestId, market: market.symbol, direction: action === 'close' ? `close-${direction}` : direction, action, mark, size: actualSize, notional: actualNotional, leverage: lev, estimatedCollateral: actualNotional / lev, estimatedTakerFee: actualNotional * feeMicros / 1_000_000, slippageBps: spec.ms, status: order ? { code: Number(order.st), reason: Number(order.sr), filledSize: Number(order.fs || 0) / scale, averageFillPrice: Number(order.fp || 0) / (10 ** Number(market.config.price_decimals || 0)), orderId: Number(order.oid || 0), requestId: Number(order.rq) } : null })
+    const orderFills = order?.oid ? matchedFills.filter((item) => Number(item.oid) === Number(order.oid)) : []
+    const onchainTransactions = await Promise.all([...new Set(orderFills.map((item) => item.at?.txid).filter((hash) => typeof hash === 'string' && /^0x[a-f\d]{64}$/i.test(hash)))].map(async (hash) => {
+      try {
+        const receipt = await publicClient.getTransactionReceipt({ hash })
+        return receipt.status === 'success' ? { hash, blockNumber: receipt.blockNumber.toString() } : null
+      } catch { return null }
+    }))
+    res.json({ accepted: true, requestId, market: market.symbol, direction: action === 'close' ? `close-${direction}` : direction, action, mark, size: actualSize, notional: actualNotional, leverage: lev, estimatedCollateral: actualNotional / lev, estimatedTakerFee: actualNotional * feeMicros / 1_000_000, slippageBps: spec.ms, status: order ? { code: Number(order.st), reason: Number(order.sr), filledSize: Number(order.fs || 0) / scale, averageFillPrice: Number(order.fp || 0) / (10 ** Number(market.config.price_decimals || 0)), orderId: Number(order.oid || 0), requestId: Number(order.rq) } : null, onchainTransactions: onchainTransactions.filter(Boolean) })
   } catch (error) {
     res.status(400).json({ error: error instanceof Error && error.message.startsWith('Enter a valid') ? error.message : 'Perpl could not complete this request.' })
   }

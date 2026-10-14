@@ -11,7 +11,8 @@ type Props = { market: Market; intent?: TradeIntent; walletAddress: string; onCo
 type OrderResult = {
   accepted: boolean; requestId: number; market: string; direction: string; mark: number; size: number; notional: number;
   leverage: number; estimatedCollateral: number; estimatedTakerFee: number; slippageBps: number;
-  status: null | { code: number; reason: number; filledSize: number; averageFillPrice: number; orderId: number; requestId: number }
+  status: null | { code: number; reason: number; filledSize: number; averageFillPrice: number; orderId: number; requestId: number };
+  onchainTransactions?: { hash: string; blockNumber: string }[]
 }
 
 const statusNames: Record<number, string> = { 1: 'Pending', 2: 'Open', 3: 'Partially filled', 4: 'Filled', 5: 'Canceled', 6: 'Expired', 7: 'Could not be placed', 8: 'Waiting for trigger', 9: 'Triggered', 10: 'Executed' }
@@ -109,7 +110,7 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
         <button className="primary-button wide" disabled={busy !== null || !estimate || !accountId || !accounts.find((account) => String(account.id) === accountId)?.forwarding || (action === 'close' && !positionId)}>{busy === 'order' ? <LoaderCircle className="spin" size={16} /> : null}{action === 'close' ? `Close ${direction} position` : `Place ${direction === 'long' ? 'buy / long' : 'sell / short'} order`}</button>
       </form>}
 
-      {result && <div className="order-result"><div className="success-icon"><Check size={22} /></div><h3>{result.status ? statusNames[result.status.code] || 'Order updated' : 'Request accepted'}</h3><p>{result.status ? `${result.status.filledSize} ${result.market} filled at ${money(result.status.averageFillPrice)}.` : 'Perpl accepted the request. The exchange has not returned the final status yet.'}</p><div className="order-review"><div><span>Request number</span><strong>{result.requestId}</strong></div><div><span>Order value</span><strong>{money(result.notional)}</strong></div><div><span>Estimated fee</span><strong>{money(result.estimatedTakerFee)}</strong></div></div><button className="secondary-button wide" onClick={onClose}>Done</button></div>}
+      {result && <div className="order-result"><div className="success-icon"><Check size={22} /></div><h3>{result.status ? statusNames[result.status.code] || 'Order updated' : 'Request accepted'}</h3><p>{result.status ? `${result.status.filledSize} ${result.market} filled at ${money(result.status.averageFillPrice)}.` : 'Perpl accepted the request. The exchange has not returned the final status yet.'}</p><div className="order-review"><div><span>Request number</span><strong>{result.requestId}</strong></div><div><span>Order value</span><strong>{money(result.notional)}</strong></div><div><span>Estimated fee</span><strong>{money(result.estimatedTakerFee)}</strong></div></div>{result.onchainTransactions?.length ? <div className="perpl-tx-proof"><strong>Confirmed on Monad</strong>{result.onchainTransactions.map((transaction) => <a key={transaction.hash} href={`https://testnet.monadscan.com/tx/${transaction.hash}`} target="_blank" rel="noreferrer">View transaction · block {Number(transaction.blockNumber).toLocaleString()} <ArrowUpRight size={14} /></a>)}</div> : null}<button className="secondary-button wide" onClick={onClose}>Done</button></div>}
 
       {error && <div className="perpl-inline-error" role="alert">{error}{error.includes('Order Forwarding') && <> <a href="https://testnet.perpl.xyz" target="_blank" rel="noreferrer">Open Perpl <ArrowUpRight size={12} /></a></>}</div>}
       <p className="perpl-network-note">Monad Testnet · No order is sent until you select Place order.</p>

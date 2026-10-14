@@ -385,6 +385,9 @@ footer > div { display: flex; justify-content: flex-end; gap: 22px; }
 .order-result h3, .order-result p { margin: 0; }
 .order-result p { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .order-result .order-review { width: 100%; text-align: left; }
+.perpl-tx-proof { display: grid; gap: 8px; width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 12px; text-align: left; }
+.perpl-tx-proof strong { font-size: 12px; }
+.perpl-tx-proof a { display: inline-flex; align-items: center; gap: 6px; color: var(--accent); font-size: 12px; }
 @media (max-width: 560px) { .trade-fields { grid-template-columns: 1fr 105px; } .signal-actions { flex-wrap: wrap; justify-content: flex-start; } }
 @media (max-width: 900px) { .signal-grid { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 560px) { .signal-grid { grid-template-columns: 1fr; } }

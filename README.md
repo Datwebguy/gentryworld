@@ -1,68 +1,86 @@
 # GentrY
 
-Open financial agent collaboration framework on Monad.
+**A market research and execution workspace for people and financial agents building on Monad.**
 
-Discover agents registered on Monad Testnet, hire their published services with x402 payments, and leave feedback on the ERC-8004 Reputation Registry. Profiles and reputation are read from live registry records.
+GentrY brings live market context, discoverable agents and user-approved trading into one practical workflow. Traders can inspect market movement, ask an agent to explain what the current data says, and prepare a Perpl order with the size, direction and risk visible before they choose to send it. Agent builders can publish a service with an onchain identity and a clear price.
+
+## Why we built it
+
+Market data, research tools, agent services and trade execution often live in separate products. That makes it difficult to see what information an agent used, what a service costs, or what will happen before an order is sent. GentrY connects those steps so independent traders and agent builders can work in a shared, inspectable environment.
+
+## What you can do
+
+- **Follow market movement.** View Perpl Testnet market prices and movement with the source and update time shown in the app.
+- **Ask an agent about a market.** The research service receives a current Perpl snapshot from the server. The language model explains that supplied data; it does not provide the underlying quotes or claim to execute a trade.
+- **Discover services.** Browse agents by capability, open their onchain identity, and review listed services and reputation.
+- **Pay for a service.** The x402 flow presents the service price and requests wallet approval before the paid request is made.
+- **Review a Perpl order.** Connect the wallet associated with a Perpl account, select a market, side, size and leverage, inspect the estimate, then explicitly place the order. When Perpl returns a fill, GentrY verifies its transaction receipt on Monad Testnet and links to the explorer.
+- **Rate an agent.** Submit reputation feedback onchain after using a service.
+
+Order placement and copy trading are deliberately user controlled: GentrY does not automatically mirror trades. A generated research response is analysis of the supplied snapshot, not a promise of performance or financial advice.
+
+## How the market answer is produced
+
+1. GentrY reads public market context from Perpl Testnet, including available market prices and funding information.
+2. The backend selects the requested market and sends that snapshot with the user's question to the configured OpenAI Responses API model (`gpt-6-luna` by default).
+3. The agent is instructed to ground current market claims in that snapshot, distinguish observation from interpretation, and leave order placement to the user-controlled trading flow.
+4. For a trade, the user reviews the order in GentrY and confirms it. The backend submits it to Perpl's trading API. For matching fills, GentrY checks the returned transaction hash against Monad Testnet and exposes a MonadScan link when the receipt succeeds.
+
+## Network and integrations
+
+- **Monad Testnet** — wallet connection, ERC-8004 identity and reputation, USDC service payments, and transaction verification.
+- **ERC-8004** — onchain agent identity and reputation.
+- **x402** — wallet-approved payment for priced agent services.
+- **Perpl Testnet** — public market context, account state, order placement and fills.
+- **OpenAI Responses API** — turns the supplied market snapshot into a concise research response; model is configurable.
+- **Reown AppKit / wagmi / viem** — wallet connection and EVM interactions.
+- **Railway** — current application hosting.
+
+## Project links
+
+- Live app: [gentryworld.up.railway.app](https://gentryworld.up.railway.app)
+- Source: [github.com/Datwebguy/gentryworld](https://github.com/Datwebguy/gentryworld)
+
+The live application uses Monad Testnet. The Perpl Testnet order panel requires a trade-enabled Perpl API key and signing key from the user. Those credentials are submitted for the request and are not saved by GentrY.
 
 ## Run locally
 
-Requires Node.js 20 or later and an EVM wallet configured for Monad Testnet.
+Requirements: Node.js 20 or newer and npm.
 
-```sh
+```bash
 npm install
+cp .env.example .env
 npm run dev
 ```
 
-Open the Vite URL printed in the terminal. The local server proxies JSON-RPC requests to `https://testnet-rpc.monad.xyz`.
+Set the server environment values below in `.env` as applicable:
 
-## Address Inspector service
+| Variable | Purpose |
+| --- | --- |
+| `OPENAI_API_KEY` | Server-side key used for market research responses. |
+| `OPENAI_MODEL` | Responses API model; defaults to `gpt-6-luna`. |
+| `GENTRY_PUBLIC_URL` | Public app URL used when publishing agent service metadata. |
+| `GENTRY_ALLOWED_ORIGIN` | Allowed browser origin for payment and API flows. |
+| `GENTRY_AGENT_PAY_TO` | Monad Testnet address that receives agent service payments. |
+| `GENTRY_AGENT_PRICE_USDC` | Listed service price in decimal USDC, for example `0.001`. |
+| `VITE_REOWN_PROJECT_ID` | Reown project ID used by the browser wallet interface. |
+| `GENTRY_AGENT_ID` | ERC-8004 identity shown as the app's reference agent; defaults to `2280`. |
 
-The reference agent reads a submitted address's live Monad Testnet balance, contract status, and current block number. It uses the Monad x402 facilitator and testnet USDC. Its service is activated only after you configure a recipient wallet and choose the price.
+Never commit `.env` or place private keys in frontend variables. For Perpl, the user enters a trade-enabled API key and signing key in the order panel; the app does not retain them. Perpl credentials are not configured as server environment variables.
 
-Create a local `.env` file with these values:
+## Build and run
 
-```env
-GENTRY_AGENT_PAY_TO=
-GENTRY_AGENT_PRICE_USDC=
-GENTRY_PUBLIC_URL=
-GENTRY_ALLOWED_ORIGIN=
-```
-
-- `GENTRY_AGENT_PAY_TO`: wallet address that receives service payments.
-- `GENTRY_AGENT_PRICE_USDC`: the price you choose per request, in USDC decimal units.
-- `GENTRY_PUBLIC_URL`: public HTTPS origin where this server is hosted. Set this after Railway creates the public domain; leave unset for local-only work.
-- `GENTRY_ALLOWED_ORIGIN`: the GentrY site's origin when hosted. Leave unset for local development.
-
-Do not put private keys or seed phrases in this file. The service uses the public recipient address; Monad's facilitator handles payment verification and settlement.
-
-When the server is configured, its profile is available at `/agent-card.json` and the paid service is `/api/address-inspector`. Register the profile URL in GentrY only after it is reachable at the intended public URL. The local `localhost` profile is only reachable from your computer.
-
-## Deploy on Railway
-
-Create a Railway service from this project. Use `npm run build` as the build command and `npm start` as the start command. Railway detects the Node app and supplies the listening port. Generate a public domain in the service's Networking settings, then set `GENTRY_PUBLIC_URL` to that HTTPS origin and add the payment settings from your `.env` to Railway's service variables. After deployment, check `/api/health` and `/agent-card.json` on the public domain before registering the profile in GentrY.
-
-## Production build
-
-```sh
+```bash
 npm run build
 npm start
 ```
 
-The server listens on port `3001` by default. Set `PORT` to change it.
+The Express server serves the built Vite app and API routes. During development, `npm run dev` starts Vite and the API server together.
 
-## Network
+## Hackathon relevance
 
-- Monad Testnet, chain ID `10143`
-- RPC: https://testnet-rpc.monad.xyz
-- Identity Registry: `0x8004A818BFB912233c491871b3d84c89A494BD9e`
-- Reputation Registry: `0x8004B663056A597Dffe9eCcC1965A193B7388713`
-- Facilitator: https://x402-facilitator.molandak.org
-- Testnet USDC: `0x534b2f3A21130d7a60830c2Df862319e593943A3`
+GentrY is built for **Onchain Finance & Trading** and **Trust, Identity & AI Infrastructure** on Monad. It combines an agent-facing market research use case with onchain identity, paid service access, user-reviewed order execution and explorer-verifiable testnet activity.
 
-## References
+## Team contributions
 
-- [Monad ERC-8004 guide](https://docs.monad.xyz/guides/erc-8004)
-- [Monad x402 guide](https://docs.monad.xyz/guides/x402)
-- [Monad Testnet explorer](https://testnet.monadscan.com)
-- [Monad testnet USDC faucet](https://faucet.circle.com)
-- [Monad faucet](https://faucet.monad.xyz)
+The repository is maintained by [Datwebguy](https://github.com/Datwebguy). [majorlabs](https://github.com/majorlabs) has write access to the repository. GitHub's contributor list reflects commits that land on the repository's default branch; collaborator access or approving a pull request alone does not add a contributor entry.
