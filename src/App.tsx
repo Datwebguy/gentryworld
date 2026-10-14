@@ -163,10 +163,13 @@ function needsHash(name?: string) {
 function ResultView({ value }: { value: unknown }) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return <pre className="result-raw">{String(value)}</pre>
   const entries = Object.entries(value as Record<string, unknown>)
-  return <div className="result-grid">{entries.map(([key, item]) => <div className="result-item" key={key}>
+  const answer = (value as Record<string, unknown>).answer
+  const fields = entries.filter(([key]) => key !== 'answer')
+  const grid = <div className="result-grid">{fields.map(([key, item]) => <div className="result-item" key={key}>
     <span>{key.replace(/([A-Z])/g, ' $1').replace(/^./, (letter) => letter.toUpperCase())}</span>
     <strong>{typeof item === 'boolean' ? (item ? 'Yes' : 'No') : String(item)}</strong>
   </div>)}</div>
+  return typeof answer === 'string' ? <div className="research-result"><p className="research-answer">{answer}</p><details><summary>Live data used</summary>{grid}</details></div> : grid
 }
 
 export default function App() {
@@ -288,7 +291,8 @@ export default function App() {
 
   const payableCount = uniquePayableProfiles(agents).length
   const feedbackCount = agents.reduce((total, agent) => total + Number(agent.summary?.count || 0n), 0)
-  const featured = uniquePayableProfiles(agents)[0]
+  const payableProfiles = uniquePayableProfiles(agents)
+  const featured = payableProfiles.find((agent) => agent.id === 2280n) || payableProfiles[0]
   const leaderboard = useMemo(() => [...agents].filter((agent) => agent.summary).sort((a, b) => {
     const scoreDifference = Number(scoreOf(b)) - Number(scoreOf(a))
     return scoreDifference || Number((b.summary?.count || 0n) - (a.summary?.count || 0n))
@@ -340,7 +344,7 @@ export default function App() {
       const transcript = chatMessages.map((message) => `${message.role === 'user' ? 'User' : 'Agent'}: ${message.text}`).join('\n')
       const task = `${transcript ? `Conversation so far:\n${transcript}\n\n` : ''}User: ${userText}\nAgent: Reply to the user’s latest message. Use the current ${chatSession.market.symbol} Monad Testnet perpetual market context when relevant.`
       const url = chatSession.endpoint.endpoint || chatSession.endpoint.url || ''
-      const response = await wrapFetchWithPayment(fetch, client)(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ task }) })
+      const response = await wrapFetchWithPayment(fetch, client)(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ task, marketSymbol: chatSession.market.symbol }) })
       if (!response.ok) throw new Error(`request ${response.status}`)
       const receipt = response.headers.get('payment-response') || response.headers.get('x-payment-response')
       if (!receipt) throw new Error('missing settlement')
@@ -349,7 +353,7 @@ export default function App() {
       const raw = await response.text()
       let result: unknown = raw
       try { result = JSON.parse(raw) } catch { /* Plain text replies remain readable. */ }
-      const answer = typeof result === 'string' ? result : JSON.stringify(result, null, 2)
+      const answer = typeof result === 'string' ? result : result && typeof result === 'object' && 'answer' in result && typeof result.answer === 'string' ? result.answer : JSON.stringify(result, null, 2)
       const paymentTx = settlement.transaction || settlement.txHash
       setChatMessages((current) => [...current, { role: 'user', text: userText }, { role: 'agent', text: answer, result, paymentTx }])
       setChatLastResult({ result, paymentTx, request: userText })

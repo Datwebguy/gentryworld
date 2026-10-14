@@ -235,6 +235,10 @@ footer > div { display: flex; justify-content: flex-end; gap: 22px; }
 .result-item span { font: 8px var(--mono); color: var(--muted); }
 .result-item strong { font-size: 11px; overflow-wrap: anywhere; }
 .result-raw { padding: 15px; background: var(--paper); border-radius: 9px; white-space: pre-wrap; font: 11px var(--mono); }
+.research-answer { margin: 16px 0; color: var(--ink); font-size: 14px; line-height: 1.7; white-space: pre-wrap; }
+.research-result details { margin-top: 14px; }
+.research-result summary { width: fit-content; color: var(--indigo); font-size: 11px; font-weight: 700; cursor: pointer; }
+.research-result .result-grid { margin-top: 10px; }
 .proof-link { padding: 12px; border-radius: 8px; background: #e4f5eb; color: #28724b; display: flex; align-items: center; gap: 7px; font-size: 10px; }
 .feedback-box { margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--line); }
 .feedback-box > div:first-child { display: flex; flex-direction: column; gap: 5px; }
