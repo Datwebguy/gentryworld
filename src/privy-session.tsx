@@ -50,7 +50,6 @@ function PrivyWalletSession({ children }: { children: ReactNode }) {
       amount = fraction ? `${whole}.${fraction}` : String(whole)
     }
     const { signature } = await signEmbeddedTypedData(data as any, {
-      address: activeWallet.address,
       uiOptions: {
         title: 'Confirm agent payment',
         description: `Authorize ${amount} USDC for this request on Monad Testnet. The payment settles after approval; signing itself does not charge gas.`,
