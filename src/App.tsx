@@ -46,7 +46,7 @@ function routeFromHash(hash: string): Route {
   if (value === 'network' || value === 'market') return 'market'
   if (value === 'workspaces') return 'workspaces'
   if (value === 'signals' || value === 'markets') return 'signals'
-  if (value === 'copy-trading' || value === 'copy') return 'copy-trading'
+  if (value === 'research' || value === 'copy-trading' || value === 'copy') return 'copy-trading'
   if (value.startsWith('agent-')) return 'profile'
   if (value === 'leaderboard' || value === 'reputation') return 'reputation'
   if (value === 'builders' || value === 'publish') return 'publish'
@@ -174,7 +174,7 @@ function ResultView({ value }: { value: unknown }) {
 }
 
 export default function App() {
-  const { address: connectedAddress, provider: walletProvider, ready: walletReady, authenticated, identity, signTypedData: signEmbeddedTypedData, openWallet, logout } = useWalletSession()
+  const { address: connectedAddress, provider: walletProvider, authenticated, identity, signTypedData: signEmbeddedTypedData, openWallet, logout } = useWalletSession()
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try { const saved = localStorage.getItem('gentry:theme'); if (saved === 'dark' || saved === 'light') return saved } catch { /* Storage may be restricted. */ }
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
@@ -222,7 +222,13 @@ export default function App() {
   const [signalMarket, setSignalMarket] = useState<Market | null>(null)
 
   useEffect(() => {
-    const onHashChange = () => setRoute(routeFromHash(window.location.hash))
+    const normalizeResearchHash = () => {
+      if (window.location.hash === '#copy-trading' || window.location.hash === '#copy') {
+        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#research`)
+      }
+    }
+    normalizeResearchHash()
+    const onHashChange = () => { normalizeResearchHash(); setRoute(routeFromHash(window.location.hash)) }
     window.addEventListener('hashchange', onHashChange)
     return () => window.removeEventListener('hashchange', onHashChange)
   }, [])
@@ -341,7 +347,6 @@ export default function App() {
     try {
       if (!connectedAddress || !walletProvider) {
         if (authenticated) { setNotice('Your GentrY wallet is still getting ready. Wait a moment, then try again.'); return }
-        if (!walletReady) { setNotice('Wallet setup is still loading. Please try again shortly.'); return }
         await openWallet(); return
       }
       const { address, wallet } = await connectWallet(walletProvider, connectedAddress)
@@ -376,8 +381,10 @@ export default function App() {
   async function onConnect() {
     if (!connectedAddress) {
       if (authenticated) return setNotice('Your GentrY wallet is still getting ready. Wait a moment, then try again.')
-      if (!walletReady) return setNotice('Wallet connection is being set up. Please try again soon.')
-      try { await openWallet() } catch { setNotice('Wallet connection was cancelled.') }
+      try { await openWallet() } catch (cause) {
+        const message = cause instanceof Error ? cause.message.toLowerCase() : ''
+        setNotice(message.includes('user rejected') || message.includes('user denied') ? 'Wallet connection was cancelled.' : 'Could not open wallet sign-in. Please try again.')
+      }
       return
     }
     if (!walletProvider) return setNotice('Your GentrY wallet is still getting ready. Wait a moment, then try again.')
@@ -422,7 +429,6 @@ export default function App() {
     try {
       if (!connectedAddress || !walletProvider) {
         if (authenticated) { setNotice('Your GentrY wallet is still getting ready. Wait a moment, then try again.'); return }
-        if (!walletReady) { setNotice('Wallet setup is still loading. Please try again shortly.'); return }
         await openWallet(); return
       }
       const { address, wallet } = await connectWallet(walletProvider, connectedAddress)
@@ -490,7 +496,7 @@ export default function App() {
   return <div className="app-shell" id="top">
     <a className="skip-link" href="#main-content">Skip to content</a><header className="topbar">
       <a className="brand" href="#top"><span className="brand-mark"><Command size={18} strokeWidth={2.5} /></span><span>GentrY</span></a>
-      <nav><a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a><a className={route === 'copy-trading' ? 'active' : ''} href="#copy-trading">Copy</a><a className={route === 'workspaces' ? 'active' : ''} href="#workspaces">Workspaces</a><a className={route === 'market' ? 'active' : ''} href="#network">Agents</a><a className={route === 'reputation' ? 'active' : ''} href="#leaderboard">Reputation</a></nav>
+      <nav><a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a><a className={route === 'copy-trading' ? 'active' : ''} href="#research">Research</a><a className={route === 'workspaces' ? 'active' : ''} href="#workspaces">Workspaces</a><a className={route === 'market' ? 'active' : ''} href="#network">Agents</a><a className={route === 'reputation' ? 'active' : ''} href="#leaderboard">Reputation</a></nav>
       <div className="top-actions"><button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button><button className="wallet-button" aria-label={walletAddress ? `Account ${walletAddress}` : 'Sign in or connect wallet'} onClick={() => walletAddress ? setAccountMenu((open) => !open) : void onConnect()}><Wallet size={15} />{walletAddress ? shortAddress(walletAddress) : 'Connect'}</button>{accountMenu && authenticated && <div className="wallet-account-menu"><span>GentrY account</span><strong>{identity || 'Wallet account'}</strong><div className="wallet-address-row"><small title={walletAddress}>{walletAddress}</small><button className="wallet-copy-button" onClick={() => void copyWalletAddress()} aria-label="Copy wallet address">{addressCopied ? <Check size={15} /> : <Copy size={15} />}{addressCopied ? 'Copied' : 'Copy'}</button></div><div className="wallet-setup-card"><span><i /> Monad Testnet</span><p>Need test MON for network fees?</p><a href="https://faucet.monad.xyz/" target="_blank" rel="noreferrer">Open Monad faucet <ArrowUpRight size={13} /></a></div><button className="wallet-signout-button" onClick={() => { setAccountMenu(false); setWalletAddress(''); void logout() }}>Sign out</button></div>}</div>
     </header>
 
@@ -543,7 +549,7 @@ export default function App() {
 
     <footer className="site-footer">
       <div className="footer-upper"><div className="footer-about"><a className="brand" href="#top"><span className="brand-mark"><Command size={18} strokeWidth={2.5} /></span><span>GentrY</span></a><p>Good questions.<br />Better connections.</p><span>Financial agents, working for you.</span></div>
-      <div className="footer-links"><strong>Explore</strong><a href="#signals">Signals</a><a href="#copy-trading">Copy traders</a><a href="#workspaces">Workspaces</a><a href="#network">Find an agent</a><a href="#leaderboard">Reputation</a></div>
+      <div className="footer-links"><strong>Explore</strong><a href="#signals">Signals</a><a href="#research">Agent research</a><a href="#workspaces">Workspaces</a><a href="#network">Find an agent</a><a href="#leaderboard">Reputation</a></div>
       <div className="footer-links"><strong>Create</strong><a href="#builders">Publish an agent</a><a href="https://github.com/Datwebguy/gentryworld" target="_blank" rel="noreferrer">GitHub <ArrowUpRight size={12} /></a><a href="https://monad.xyz" target="_blank" rel="noreferrer">Built on Monad <ArrowUpRight size={12} /></a></div>
       </div><div className="footer-bottom"><span>GentrY. Open collaboration, real work.</span><span className="network-badge"><i /> Monad Testnet</span><a href="#top">Back to home <ArrowUpRight size={14} /></a></div>
     </footer>

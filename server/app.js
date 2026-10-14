@@ -1,5 +1,6 @@
 import 'dotenv/config'
 import express from 'express'
+import WebSocket from 'ws'
 import { createHash, createPrivateKey, randomBytes, sign as signEd25519 } from 'node:crypto'
 import { ExactEvmScheme } from '@x402/evm/exact/server'
 import { HTTPFacilitatorClient, x402ResourceServer } from '@x402/core/server'
@@ -137,6 +138,79 @@ async function signedPerplRequest(credentials, method, target, body = '') {
     },
     ...(body ? { body } : {}),
     signal: AbortSignal.timeout(10_000),
+  })
+}
+
+async function submitPerplOrder(credentials, order) {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket('wss://testnet.perpl.xyz/ws/v1/trading')
+    const commandSequence = Date.now()
+    let authenticated = false
+    let submitted = false
+    let commandAccepted = false
+    let orderStatus = null
+    let finished = false
+    const timer = setTimeout(() => finish(new Error('Perpl did not confirm the order request in time.')), 12_000)
+
+    function finish(error, result) {
+      if (finished) return
+      finished = true
+      clearTimeout(timer)
+      try { socket.close() } catch { /* Socket may already be closed. */ }
+      if (error) reject(error)
+      else resolve(result)
+    }
+
+    socket.on('open', () => {
+      try {
+        const timestamp = Date.now().toString()
+        const nonce = randomBytes(16).toString('base64url')
+        const canonical = [10143, 'trading-ws-signin', timestamp, nonce].join('\n')
+        const signature = signEd25519(null, Buffer.from(canonical), credentials.key).toString('base64url')
+        socket.send(JSON.stringify({ mt: 29, chain_id: 10143, api_key: credentials.apiKey, timestamp, nonce, signature }))
+      } catch (error) { finish(error) }
+    })
+
+    socket.on('message', (raw) => {
+      let frame
+      try { frame = JSON.parse(raw.toString()) } catch { return finish(new Error('Perpl returned an unreadable trading response.')) }
+
+      if (frame.mt === 19 && !authenticated) {
+        authenticated = true
+        const account = (frame.d?.as || frame.d?.accounts || frame.as || []).find((item) => Number(item.id) === Number(order.acc))
+        if (account && Number(account.lfr || 0) >= Number(order.rq)) return finish(new Error('The Perpl order request ID is stale. Refresh the account and try again.'))
+        if (socket.readyState !== WebSocket.OPEN) return finish(new Error('Perpl trading connection closed before order submission.'))
+        submitted = true
+        socket.send(JSON.stringify({ mt: 22, sn: commandSequence, ...order }))
+        return
+      }
+
+      if (frame.mt === 3 && submitted && Number(frame.cid) === commandSequence) {
+        if (Number(frame.status?.code) !== 0) return finish(new Error(frame.status?.error || 'Perpl rejected the order request.'))
+        commandAccepted = true
+        if (orderStatus) return finish(null, { commandAccepted, status: orderStatus })
+        // The gateway acknowledgement only confirms forwarding. Wait briefly for
+        // the separate order update, then let the client query history.
+        setTimeout(() => finish(null, { commandAccepted, status: orderStatus }), 1800)
+        return
+      }
+
+      if (frame.mt === 24 && submitted) {
+        const match = (Array.isArray(frame.d) ? frame.d : []).find((item) => Number(item.rq) === Number(order.rq) && Number(item.acc) === Number(order.acc) && Number(item.mkt) === Number(order.mkt))
+        if (match) {
+          orderStatus = { code: Number(match.st), reason: Number(match.sr || 0), filledSize: Number(match.fs || 0), averageFillPrice: Number(match.fp || 0), orderId: Number(match.oid || 0), requestId: Number(match.rq) }
+          if (commandAccepted) finish(null, { commandAccepted, status: orderStatus })
+        }
+      }
+    })
+
+    socket.on('error', () => finish(new Error('Could not connect to Perpl trading. Try again shortly.')))
+    socket.on('close', (code) => {
+      if (finished) return
+      if (code === 3401) return finish(new Error('Perpl could not verify this API key. Check that it is active on Testnet.'))
+      if (!commandAccepted) finish(new Error('Perpl closed the trading connection before confirming the order.'))
+      else finish(null, { commandAccepted, status: orderStatus })
+    })
   })
 }
 
@@ -279,16 +353,19 @@ app.post('/api/perpl/order', async (req, res) => {
     const feeMicros = Number(takerFees[accountFeeTier] ?? market.config.taker_fee ?? 0)
     const requestId = Math.max(Number(account.lfr || 0), 0) + 1
     const spec = { rq: requestId, mkt: Number(market.id), acc: Number(account.id), t: orderType, p: 0, s: scaledSize, ms: Number(market.order_max_market_slippage_bps || 0), fl: 4, ...(action === 'close' ? { lp: Number(positionId) } : {}), lv: Math.round(lev * 100), lb: 0 }
-    const body = JSON.stringify({ d: [spec] })
-    const submittedAt = Date.now()
-    const submitResponse = await signedPerplRequest(credentials, 'POST', '/v1/trading/orders', body)
-    const acknowledgment = await submitResponse.json().catch(() => ({}))
-    if (!submitResponse.ok) return res.status(submitResponse.status).json({ error: submitResponse.status === 403 ? 'This Perpl API key needs trading access.' : submitResponse.status === 401 ? 'Perpl could not verify these credentials.' : acknowledgment.status?.error || 'Perpl did not accept the order request.' })
-    const orderStatus = acknowledgment.statuses?.[0]
-    if (acknowledgment.status?.code !== 0 || !orderStatus || orderStatus.code !== 0) return res.status(422).json({ error: orderStatus?.error || acknowledgment.status?.error || 'Perpl declined the order.' })
-    // Perpl's acknowledgement is the response for this submitted order. Return
-    // it immediately, then let the account refresh fetch and verify the fill.
-    res.json({ accepted: true, requestId, market: market.symbol, direction: action === 'close' ? `close-${direction}` : direction, action, mark, size: actualSize, notional: actualNotional, leverage: lev, estimatedCollateral: actualNotional / lev, estimatedTakerFee: actualNotional * feeMicros / 1_000_000, slippageBps: spec.ms, status: null, onchainTransactions: [] })
+    let forwarded
+    try {
+      forwarded = await submitPerplOrder(credentials, spec)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Perpl could not complete this request.'
+      return res.status(/verify|API key/i.test(message) ? 401 : 502).json({ error: message })
+    }
+    const status = forwarded.status ? {
+      ...forwarded.status,
+      filledSize: forwarded.status.filledSize / scale,
+      averageFillPrice: forwarded.status.averageFillPrice / (10 ** Number(market.config.price_decimals || 0)),
+    } : null
+    res.json({ accepted: forwarded.commandAccepted, requestId, market: market.symbol, direction: action === 'close' ? `close-${direction}` : direction, action, mark, size: actualSize, notional: actualNotional, leverage: lev, estimatedCollateral: actualNotional / lev, estimatedTakerFee: actualNotional * feeMicros / 1_000_000, slippageBps: spec.ms, status, onchainTransactions: [] })
   } catch (error) {
     res.status(400).json({ error: error instanceof Error && error.message.startsWith('Enter a valid') ? error.message : 'Perpl could not complete this request.' })
   }

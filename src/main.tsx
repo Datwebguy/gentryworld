@@ -10,6 +10,18 @@ type ErrorBoundaryState = { failed: boolean }
 class AppErrorBoundary extends React.Component<React.PropsWithChildren, ErrorBoundaryState> {
   state: ErrorBoundaryState = { failed: false }
 
+  componentDidMount() {
+    window.addEventListener('hashchange', this.handleRouteChange)
+  }
+
+  componentWillUnmount() {
+    window.removeEventListener('hashchange', this.handleRouteChange)
+  }
+
+  handleRouteChange = () => {
+    if (this.state.failed) this.setState({ failed: false })
+  }
+
   static getDerivedStateFromError(): ErrorBoundaryState {
     return { failed: true }
   }

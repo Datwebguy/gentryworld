@@ -13,7 +13,7 @@ const monadTestnet = defineChain({
 })
 
 function PrivyWalletSession({ children }: { children: ReactNode }) {
-  const { ready, authenticated, user, logout } = usePrivy()
+  const { ready, authenticated, user, logout, login } = usePrivy()
   const { connectOrCreateWallet } = useConnectOrCreateWallet()
   const { signTypedData: signEmbeddedTypedData } = useSignTypedData()
   const { ready: walletsReady, wallets } = useWallets()
@@ -66,9 +66,9 @@ function PrivyWalletSession({ children }: { children: ReactNode }) {
     authenticated,
     identity,
     signTypedData: activeWallet?.walletClientType === 'privy' ? signPaymentAuthorization : undefined,
-    openWallet: connectOrCreateWallet,
+    openWallet: authenticated ? connectOrCreateWallet : login,
     logout,
-  }), [activeWallet, authenticated, connectOrCreateWallet, identity, logout, provider, ready, signPaymentAuthorization, walletsReady])
+  }), [activeWallet, authenticated, connectOrCreateWallet, identity, login, logout, provider, ready, signPaymentAuthorization, walletsReady])
 
   return <WalletContext.Provider value={session}>{children}</WalletContext.Provider>
 }
