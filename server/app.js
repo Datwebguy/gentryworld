@@ -125,6 +125,46 @@ async function signedPerplRequest(credentials, method, target, body = '') {
   })
 }
 
+const perplExchangeAddress = '0x1964c32f0be608e7d29302aff5e61268e72080cc'
+async function verifiedPerplFill(fill) {
+  try {
+    let hash = typeof fill.at?.txid === 'string' && /^0x[a-f\d]{64}$/i.test(fill.at.txid) ? fill.at.txid : null
+    if (!hash) {
+      const timestamp = Math.floor(Number(fill.at?.t || 0) / 1000)
+      if (!Number.isFinite(timestamp) || timestamp <= 0) return null
+      const latest = await publicClient.getBlockNumber()
+      const lower = latest > 6000n ? latest - 6000n : 0n
+      const [latestBlock, lowerBlock] = await Promise.all([
+        publicClient.getBlock({ blockNumber: latest }),
+        publicClient.getBlock({ blockNumber: lower }),
+      ])
+      const target = BigInt(timestamp)
+      if (target > latestBlock.timestamp || target < lowerBlock.timestamp) return null
+      let low = lower
+      let high = latest
+      while (low < high) {
+        const middle = (low + high) / 2n
+        const block = await publicClient.getBlock({ blockNumber: middle })
+        if (block.timestamp >= target) high = middle
+        else low = middle + 1n
+      }
+      const block = await publicClient.getBlock({ blockNumber: low })
+      if (block.timestamp !== target) return null
+      const logs = await publicClient.getLogs({ address: perplExchangeAddress, fromBlock: low, toBlock: low })
+      const accountWord = BigInt(fill.acc).toString(16).padStart(64, '0')
+      const marketWord = BigInt(fill.mkt).toString(16).padStart(64, '0')
+      const event = logs.find((log) => {
+        const encoded = [...(log.topics || []), log.data].join('').toLowerCase()
+        return encoded.includes(accountWord) && encoded.includes(marketWord)
+      })
+      hash = event?.transactionHash || null
+    }
+    if (!hash) return null
+    const receipt = await publicClient.getTransactionReceipt({ hash })
+    return receipt.status === 'success' ? { hash, blockNumber: receipt.blockNumber.toString() } : null
+  } catch { return null }
+}
+
 app.post('/api/perpl/account', async (req, res) => {
   try {
     const credentials = perplCredentials(req.body)
@@ -132,11 +172,15 @@ app.post('/api/perpl/account', async (req, res) => {
     const payload = await response.json().catch(() => ({}))
     if (!response.ok) return res.status(response.status).json({ error: response.status === 401 ? 'Perpl could not verify these credentials.' : response.status === 403 ? 'This Perpl key cannot read account details.' : response.status === 404 ? 'No Perpl trading account is linked to this wallet yet.' : 'Perpl account details are unavailable.' })
     const accounts = Array.isArray(payload.as) ? payload.as : []
-    const [positionsResponse, contextResponse] = await Promise.all([
+    const [positionsResponse, fillsResponse, accountHistoryResponse, contextResponse] = await Promise.all([
       signedPerplRequest(credentials, 'GET', '/v1/trading/positions'),
+      signedPerplRequest(credentials, 'GET', '/v1/trading/fills?count=25'),
+      signedPerplRequest(credentials, 'GET', '/v1/trading/account-history?count=25'),
       fetch('https://testnet.perpl.xyz/api/v1/pub/context', { signal: AbortSignal.timeout(8000) }),
     ])
     const positionsPayload = positionsResponse.ok ? await positionsResponse.json().catch(() => ({})) : {}
+    const fillsPayload = fillsResponse.ok ? await fillsResponse.json().catch(() => ({})) : {}
+    const accountHistoryPayload = accountHistoryResponse.ok ? await accountHistoryResponse.json().catch(() => ({})) : {}
     const context = contextResponse.ok ? await contextResponse.json().catch(() => ({})) : {}
     const markets = new Map((context.markets || []).map((market) => [Number(market.id), market]))
     const positions = (positionsPayload.d || []).filter((position) => Number(position.st) === 1)
@@ -148,7 +192,28 @@ app.post('/api/perpl/account', async (req, res) => {
         const size = Number(position.s || 0) / (10 ** sizeDecimals)
         return { id: Number(position.pid), accountId: Number(position.acc), marketId: Number(position.mkt), symbol: market?.symbol || `Market ${position.mkt}`, side: Number(position.sd) === 1 ? 'long' : 'short', size, entryPrice: Number(position.ep || 0) / (10 ** priceDecimals), mark, notional: size * mark, leverage: Number(position.lv || 100) / 100 }
       })
-    res.json({ address: payload.addr, block: payload.sn, accounts: accounts.map((account) => ({ id: account.id, forwarding: Boolean(account.fw), lastRequestId: Number(account.lfr || 0), balance: account.b, equity: account.eq })), positions })
+    const visibleFills = (fillsPayload.d || []).filter((fill) => accounts.some((account) => Number(account.id) === Number(fill.acc))).slice(0, 4)
+    const fills = await Promise.all(visibleFills.map(async (fill, index) => {
+      const market = markets.get(Number(fill.mkt))
+      const sizeDecimals = Number(market?.config?.size_decimals || 0)
+      const priceDecimals = Number(market?.config?.price_decimals || 0)
+      const receipt = index === 0 ? await verifiedPerplFill(fill) : null
+      return {
+        orderId: Number(fill.oid), accountId: Number(fill.acc), marketId: Number(fill.mkt), symbol: market?.symbol || `Market ${fill.mkt}`,
+        type: Number(fill.t), size: Number(fill.s || 0) / (10 ** sizeDecimals), price: Number(fill.p || 0) / (10 ** priceDecimals),
+        timestamp: Number(fill.at?.t || 0), blockNumber: fill.at?.b ?? null, transactionIndex: fill.at?.tx ?? null,
+        transactionHash: receipt?.hash || null, transaction: receipt,
+      }
+    }))
+    const accountActivity = await Promise.all((accountHistoryPayload.d || []).filter((event) => accounts.some((account) => Number(account.id) === Number(event.id))).slice(0, 4).map(async (event) => {
+      const hash = typeof event.at?.txid === 'string' && /^0x[a-f\d]{64}$/i.test(event.at.txid) ? event.at.txid : null
+      if (!hash) return { type: Number(event.et), timestamp: Number(event.at?.t || 0), blockNumber: event.at?.b ?? null, transactionIndex: event.at?.tx ?? null, transaction: null }
+      try {
+        const receipt = await publicClient.getTransactionReceipt({ hash })
+        return { type: Number(event.et), timestamp: Number(event.at?.t || 0), blockNumber: event.at?.b ?? null, transactionIndex: event.at?.tx ?? null, transaction: receipt.status === 'success' ? { hash, blockNumber: receipt.blockNumber.toString() } : null }
+      } catch { return { type: Number(event.et), timestamp: Number(event.at?.t || 0), blockNumber: event.at?.b ?? null, transactionIndex: event.at?.tx ?? null, transaction: null } }
+    }))
+    res.json({ address: payload.addr, block: payload.sn, accounts: accounts.map((account) => ({ id: account.id, forwarding: Boolean(account.fw), lastRequestId: Number(account.lfr || 0), balance: account.b, equity: account.eq })), positions, fills, accountActivity })
   } catch (error) {
     res.status(400).json({ error: error instanceof Error && error.message.startsWith('Enter a valid') ? error.message : 'Could not read the Perpl account.' })
   }
@@ -198,7 +263,7 @@ app.post('/api/perpl/order', async (req, res) => {
     const takerFees = Array.isArray(market.config.taker_fees) ? market.config.taker_fees : []
     const feeMicros = Number(takerFees[accountFeeTier] ?? market.config.taker_fee ?? 0)
     const requestId = Math.max(Number(account.lfr || 0), 0) + 1
-    const spec = { rq: requestId, mkt: Number(market.id), acc: Number(account.id), t: orderType, p: 0, s: scaledSize, ms: Number(market.order_max_market_slippage_bps || 0), fl: 4, lv: Math.round(lev * 100), lb: 0 }
+    const spec = { rq: requestId, mkt: Number(market.id), acc: Number(account.id), t: orderType, p: 0, s: scaledSize, ms: Number(market.order_max_market_slippage_bps || 0), fl: 4, ...(action === 'close' ? { lp: Number(positionId) } : {}), lv: Math.round(lev * 100), lb: 0 }
     const body = JSON.stringify({ d: [spec] })
     const submittedAt = Date.now()
     const submitResponse = await signedPerplRequest(credentials, 'POST', '/v1/trading/orders', body)
@@ -206,44 +271,34 @@ app.post('/api/perpl/order', async (req, res) => {
     if (!submitResponse.ok) return res.status(submitResponse.status).json({ error: submitResponse.status === 403 ? 'This Perpl API key needs trading access.' : submitResponse.status === 401 ? 'Perpl could not verify these credentials.' : acknowledgment.status?.error || 'Perpl did not accept the order request.' })
     const orderStatus = acknowledgment.statuses?.[0]
     if (acknowledgment.status?.code !== 0 || !orderStatus || orderStatus.code !== 0) return res.status(422).json({ error: orderStatus?.error || acknowledgment.status?.error || 'Perpl declined the order.' })
-    let order = null
-    let matchedFills = []
-    for (let attempt = 0; attempt < 5 && !order; attempt++) {
-      if (attempt) await new Promise((resolve) => setTimeout(resolve, 700))
-      const [historyResponse, fillsResponse] = await Promise.all([
-        signedPerplRequest(credentials, 'GET', '/v1/trading/order-history?count=50'),
-        signedPerplRequest(credentials, 'GET', '/v1/trading/fills?count=50'),
-      ])
-      if (historyResponse.ok) {
-        const history = await historyResponse.json().catch(() => ({}))
-        order = history.d?.find((item) => Number(item.rq) === requestId && Number(item.acc) === Number(account.id) && Number(item.mkt) === Number(market.id)) || null
-      }
-      if (fillsResponse.ok) {
-        const fills = await fillsResponse.json().catch(() => ({}))
-        matchedFills = (fills.d || []).filter((item) => Number(item.acc) === Number(account.id) && Number(item.mkt) === Number(market.id) && Number(item.t) === spec.t && Number(item.at?.t) >= submittedAt - 1000 && Number(item.at?.t) <= submittedAt + 15_000)
-      }
-      // Perpl may publish the fill before its order-history view catches up.
-      // A fill carries no request ID, so only associate a recent fill matching
-      // this account, market, side, and the requested size, within this request's
-      // short settlement window.
-      if (!order && matchedFills.length) {
-        const orderId = Number(matchedFills[0].oid)
-        const sameOrder = matchedFills.filter((item) => Number(item.oid) === orderId)
-        const filledSize = sameOrder.reduce((sum, item) => sum + Number(item.s || 0), 0)
-        const averagePrice = filledSize ? sameOrder.reduce((sum, item) => sum + Number(item.p || 0) * Number(item.s || 0), 0) / filledSize : 0
-        order = { st: filledSize >= scaledSize ? 4 : 3, sr: 0, fs: filledSize, fp: averagePrice, oid: orderId, rq: requestId }
-      }
-    }
-    const orderFills = order?.oid ? matchedFills.filter((item) => Number(item.oid) === Number(order.oid)) : []
-    const onchainTransactions = await Promise.all([...new Set(orderFills.map((item) => item.at?.txid).filter((hash) => typeof hash === 'string' && /^0x[a-f\d]{64}$/i.test(hash)))].map(async (hash) => {
-      try {
-        const receipt = await publicClient.getTransactionReceipt({ hash })
-        return receipt.status === 'success' ? { hash, blockNumber: receipt.blockNumber.toString() } : null
-      } catch { return null }
-    }))
-    res.json({ accepted: true, requestId, market: market.symbol, direction: action === 'close' ? `close-${direction}` : direction, action, mark, size: actualSize, notional: actualNotional, leverage: lev, estimatedCollateral: actualNotional / lev, estimatedTakerFee: actualNotional * feeMicros / 1_000_000, slippageBps: spec.ms, status: order ? { code: Number(order.st), reason: Number(order.sr), filledSize: Number(order.fs || 0) / scale, averageFillPrice: Number(order.fp || 0) / (10 ** Number(market.config.price_decimals || 0)), orderId: Number(order.oid || 0), requestId: Number(order.rq) } : null, onchainTransactions: onchainTransactions.filter(Boolean) })
+    // Perpl's acknowledgement is the response for this submitted order. Return
+    // it immediately, then let the account refresh fetch and verify the fill.
+    res.json({ accepted: true, requestId, market: market.symbol, direction: action === 'close' ? `close-${direction}` : direction, action, mark, size: actualSize, notional: actualNotional, leverage: lev, estimatedCollateral: actualNotional / lev, estimatedTakerFee: actualNotional * feeMicros / 1_000_000, slippageBps: spec.ms, status: null, onchainTransactions: [] })
   } catch (error) {
     res.status(400).json({ error: error instanceof Error && error.message.startsWith('Enter a valid') ? error.message : 'Perpl could not complete this request.' })
+  }
+})
+
+app.post('/api/perpl/order-status', async (req, res) => {
+  try {
+    const { requestId, accountId, marketId, sizeDecimals = 0, priceDecimals = 0 } = req.body || {}
+    if (![requestId, accountId, marketId].every((value) => Number.isInteger(Number(value))) || ![sizeDecimals, priceDecimals].every((value) => Number.isInteger(Number(value)) && Number(value) >= 0 && Number(value) <= 18)) {
+      return res.status(400).json({ error: 'Review the request, account, and market identifiers.' })
+    }
+    const credentials = perplCredentials(req.body)
+    const response = await signedPerplRequest(credentials, 'GET', '/v1/trading/order-history?count=50')
+    if (!response.ok) return res.status(response.status).json({ error: 'Perpl order status is temporarily unavailable.' })
+    const history = await response.json().catch(() => ({}))
+    const order = (history.d || []).find((item) => Number(item.rq) === Number(requestId) && Number(item.acc) === Number(accountId) && Number(item.mkt) === Number(marketId))
+    if (!order) return res.json({ found: false, status: null })
+    res.json({ found: true, status: {
+      code: Number(order.st), reason: Number(order.sr),
+      filledSize: Number(order.fs || 0) / (10 ** Number(sizeDecimals)),
+      averageFillPrice: Number(order.fp || 0) / (10 ** Number(priceDecimals)),
+      orderId: Number(order.oid || 0), requestId: Number(order.rq),
+    } })
+  } catch {
+    res.status(400).json({ error: 'Could not read the Perpl order status.' })
   }
 })
 
