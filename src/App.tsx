@@ -173,7 +173,7 @@ function ResultView({ value }: { value: unknown }) {
 }
 
 export default function App() {
-  const { address: connectedAddress, provider: walletProvider, ready: walletReady, authenticated, identity, openWallet, logout } = useWalletSession()
+  const { address: connectedAddress, provider: walletProvider, ready: walletReady, authenticated, identity, signTypedData: signEmbeddedTypedData, openWallet, logout } = useWalletSession()
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     try { const saved = localStorage.getItem('gentry:theme'); if (saved === 'dark' || saved === 'light') return saved } catch { /* Storage may be restricted. */ }
     return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
@@ -340,7 +340,9 @@ export default function App() {
       if (!connectedAddress) { await openWallet(); return }
       const { address, wallet } = await connectWallet(walletProvider, connectedAddress)
       setWalletAddress(address)
-      const signer = { address, signTypedData: async (message: any) => wallet.signTypedData({ account: address, domain: message.domain, types: message.types, primaryType: message.primaryType, message: message.message } as any) }
+      const signer = { address, signTypedData: async (message: any) => signEmbeddedTypedData
+        ? signEmbeddedTypedData(message)
+        : wallet.signTypedData({ account: address, domain: message.domain, types: message.types, primaryType: message.primaryType, message: message.message } as any) }
       const client = new x402Client().register('eip155:10143', new ExactEvmScheme(signer as any)).registerPolicy((_version, requirements) => requirements.filter((requirement) => requirement.scheme === 'exact' && requirement.network === 'eip155:10143' && requirement.asset.toLowerCase() === usdcAddress.toLowerCase()))
       const transcript = chatMessages.map((message) => `${message.role === 'user' ? 'User' : 'Agent'}: ${message.text}`).join('\n')
       const task = `${transcript ? `Conversation so far:\n${transcript}\n\n` : ''}User: ${userText}\nAgent: Reply to the user’s latest message. Use the current ${chatSession.market.symbol} Monad Testnet perpetual market context when relevant.`
@@ -393,10 +395,12 @@ export default function App() {
       setWalletAddress(address)
       const signer = {
         address,
-        signTypedData: async (message: any) => wallet.signTypedData({
-          account: address, domain: message.domain, types: message.types,
-          primaryType: message.primaryType, message: message.message,
-        } as any),
+        signTypedData: async (message: any) => signEmbeddedTypedData
+          ? signEmbeddedTypedData(message)
+          : wallet.signTypedData({
+            account: address, domain: message.domain, types: message.types,
+            primaryType: message.primaryType, message: message.message,
+          } as any),
       }
       const client = new x402Client().register('eip155:10143', new ExactEvmScheme(signer as any))
         .registerPolicy((_version, requirements) => requirements.filter((requirement) =>

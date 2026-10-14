@@ -1,12 +1,14 @@
 import { createContext, lazy, Suspense, useContext, useState, type ReactNode } from 'react'
 
 export type Eip1193Provider = { request(args: { method: string; params?: unknown[] }): Promise<any> }
+export type TypedDataRequest = { domain: Record<string, unknown>; types: Record<string, unknown>; primaryType: string; message: Record<string, unknown> }
 type WalletSession = {
   address?: string
   provider?: Eip1193Provider
   ready: boolean
   authenticated: boolean
   identity?: string
+  signTypedData?: (data: TypedDataRequest) => Promise<string>
   openWallet: () => void | Promise<void>
   logout: () => void | Promise<void>
 }
