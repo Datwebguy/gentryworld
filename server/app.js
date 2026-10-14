@@ -9,8 +9,8 @@ import { fileURLToPath } from 'node:url'
 
 const app = express()
 app.set('trust proxy', true)
-// HyperRPC is used for indexed event queries. Contract reads stay on Monad's
-// official RPC because the HyperSync JSON-RPC surface does not expose eth_call.
+// Contract reads use Monad's official RPC. HyperRPC indexing is not part of
+// this API path.
 const rpcUrl = 'https://testnet-rpc.monad.xyz'
 const network = 'eip155:10143'
 const usdcAddress = '0x534b2f3A21130d7a60830c2Df862319e593943A3'
