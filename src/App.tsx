@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, ArrowRight, ArrowUpRight, ArrowUpRightFromSquare, Check, Moon, Sun,
   CircleHelp, Coins, Command, Fingerprint, LoaderCircle, Network, RefreshCw,
-  FileCheck2, ScanLine, Search, Star, Trophy, Wallet, X,
+  Copy, FileCheck2, ScanLine, Search, Star, Trophy, Wallet, X,
 } from 'lucide-react'
 import { ExactEvmScheme } from '@x402/evm'
 import { x402Client } from '@x402/core/client'
@@ -193,6 +193,7 @@ export default function App() {
   const [filter, setFilter] = useState<'all' | 'payable' | 'services'>('payable')
   const [walletAddress, setWalletAddress] = useState('')
   const [accountMenu, setAccountMenu] = useState(false)
+  const [addressCopied, setAddressCopied] = useState(false)
   useEffect(() => { setWalletAddress(connectedAddress || '') }, [connectedAddress])
   const [selected, setSelected] = useState<Agent | null>(null)
   const [hireRequest, setHireRequest] = useState<{ agent: Agent; endpoint: AgentEndpoint } | null>(null)
@@ -377,6 +378,28 @@ export default function App() {
     catch { setNotice('Switch to Monad Testnet in your wallet and try again.') }
   }
 
+  async function copyWalletAddress() {
+    if (!walletAddress) return
+    try {
+      await navigator.clipboard.writeText(walletAddress)
+      setAddressCopied(true)
+      window.setTimeout(() => setAddressCopied(false), 1800)
+    } catch {
+      const input = document.createElement('textarea')
+      input.value = walletAddress
+      input.setAttribute('readonly', '')
+      input.style.position = 'fixed'
+      input.style.opacity = '0'
+      document.body.appendChild(input)
+      input.select()
+      const copied = document.execCommand('copy')
+      input.remove()
+      setAddressCopied(copied)
+      window.setTimeout(() => setAddressCopied(false), 1800)
+      if (!copied) setNotice('Could not copy the wallet address. Select and copy it manually.')
+    }
+  }
+
   async function hire(event: React.FormEvent) {
     event.preventDefault()
     if (!hireRequest) return
@@ -457,7 +480,7 @@ export default function App() {
     <a className="skip-link" href="#main-content">Skip to content</a><header className="topbar">
       <a className="brand" href="#top"><span className="brand-mark"><Command size={18} strokeWidth={2.5} /></span><span>GentrY</span></a>
       <nav><a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a><a className={route === 'copy-trading' ? 'active' : ''} href="#copy-trading">Copy</a><a className={route === 'workspaces' ? 'active' : ''} href="#workspaces">Workspaces</a><a className={route === 'market' ? 'active' : ''} href="#network">Agents</a><a className={route === 'reputation' ? 'active' : ''} href="#leaderboard">Reputation</a></nav>
-      <div className="top-actions"><button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button><button className="wallet-button" aria-label={walletAddress ? `Account ${walletAddress}` : 'Sign in or connect wallet'} onClick={() => walletAddress ? setAccountMenu((open) => !open) : void onConnect()}><Wallet size={15} />{walletAddress ? shortAddress(walletAddress) : 'Connect'}</button>{accountMenu && authenticated && <div className="wallet-account-menu"><span>GentrY account</span><strong>{identity || 'Wallet account'}</strong><small>{walletAddress}</small><button onClick={() => { setAccountMenu(false); setWalletAddress(''); void logout() }}>Sign out</button></div>}</div>
+      <div className="top-actions"><button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button><button className="wallet-button" aria-label={walletAddress ? `Account ${walletAddress}` : 'Sign in or connect wallet'} onClick={() => walletAddress ? setAccountMenu((open) => !open) : void onConnect()}><Wallet size={15} />{walletAddress ? shortAddress(walletAddress) : 'Connect'}</button>{accountMenu && authenticated && <div className="wallet-account-menu"><span>GentrY account</span><strong>{identity || 'Wallet account'}</strong><div className="wallet-address-row"><small title={walletAddress}>{walletAddress}</small><button className="wallet-copy-button" onClick={() => void copyWalletAddress()} aria-label="Copy wallet address">{addressCopied ? <Check size={15} /> : <Copy size={15} />}{addressCopied ? 'Copied' : 'Copy'}</button></div><div className="wallet-setup-card"><span><i /> Monad Testnet</span><p>Need test MON for network fees?</p><a href="https://faucet.monad.xyz/" target="_blank" rel="noreferrer">Open Monad faucet <ArrowUpRight size={13} /></a></div><button className="wallet-signout-button" onClick={() => { setAccountMenu(false); setWalletAddress(''); void logout() }}>Sign out</button></div>}</div>
     </header>
 
     <main className={route === 'home' ? 'home-main' : 'app-main'} id="main-content">
