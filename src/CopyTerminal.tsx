@@ -10,9 +10,15 @@ const followedKey = 'gentry:followed-agents:v1'
 function readFollowed(): string[] {
   try { const value = JSON.parse(localStorage.getItem(followedKey) || '[]'); return Array.isArray(value) ? value.filter((id): id is string => typeof id === 'string') : [] } catch { return [] }
 }
-function payable(agent: Agent) { return agent.card?.x402Support !== false && Array.isArray(agent.card?.endpoints) && agent.card.endpoints.some((endpoint: any) => typeof (endpoint?.endpoint || endpoint?.url) === 'string') }
+function marketEndpoint(agent: Agent) {
+  if (agent.card?.x402Support === false || !Array.isArray(agent.card?.endpoints)) return undefined
+  return agent.card.endpoints.find((endpoint: any) =>
+    typeof (endpoint?.endpoint || endpoint?.url) === 'string' &&
+    /market|signal|research|analysis/i.test([endpoint?.name, endpoint?.endpoint, endpoint?.url, ...(Array.isArray(endpoint?.skills) ? endpoint.skills : [])].join(' ')),
+  )
+}
 function price(agent: Agent) {
-  const endpoint = agent.card?.endpoints?.find((item: any) => item?.pricing?.amount)
+  const endpoint = marketEndpoint(agent)
   return endpoint?.pricing ? `${endpoint.pricing.amount} ${endpoint.pricing.currency || 'USDC'}` : 'Price shown at payment'
 }
 function skills(agent: Agent) {
@@ -25,7 +31,7 @@ export function CopyTerminal({ agents, markets, onAsk }: Props) {
   const [tab, setTab] = useState<'discover' | 'following'>('discover')
   const [query, setQuery] = useState('')
   const [marketId, setMarketId] = useState('')
-  const available = useMemo(() => agents.filter(payable), [agents])
+  const available = useMemo(() => agents.filter((agent) => marketEndpoint(agent)), [agents])
   const visible = useMemo(() => available.filter((agent) => {
     if (tab === 'following' && !followed.includes(agent.id.toString())) return false
     const text = query.trim().toLowerCase()
@@ -50,7 +56,8 @@ export function CopyTerminal({ agents, markets, onAsk }: Props) {
     {visible.length > 0 && <div className="copy-trader-grid">{visible.map((agent) => {
       const id = agent.id.toString()
       const isFollowed = followed.includes(id)
-      return <article className="copy-trader-card copy-agent-card" key={id}><div className="copy-card-head"><span className="copy-rank">#{id}</span><span className="copy-avatar copy-avatar-fallback">{String(agent.card?.name || '?').slice(0, 1).toUpperCase()}</span><span className="copy-trader-name">{agent.card?.name || `Agent ${id}`}</span><span className="copy-following-pill"><i /> Available</span></div><p className="copy-agent-description">{agent.card?.description || 'This agent has not added a description.'}</p><div className="copy-agent-tags">{skills(agent).map((tag: string) => <span key={tag}>{tag}</span>)}</div><div className="copy-agent-meta"><span>Listed price</span><strong>{price(agent)}</strong><span>Reputation</span><strong>{agent.summary ? <><Star size={13} /> {Number(agent.summary.value) / (10 ** agent.summary.decimals)} · {agent.summary.count.toString()} reviews</> : 'No reviews yet'}</strong></div><div className="copy-agent-actions"><button className="copy-track-button" onClick={() => toggle(agent)}>{isFollowed ? <Check size={15} /> : <Bookmark size={15} />}{isFollowed ? 'Saved' : 'Save agent'}</button><button className="primary-button" disabled={!chosenMarket} onClick={() => chosenMarket && onAsk(agent, chosenMarket)}>Ask about {chosenMarket?.symbol || 'market'} <ArrowRight size={14} /></button></div></article>
+      const endpoint = marketEndpoint(agent)!
+      return <article className="copy-trader-card copy-agent-card" key={id}><div className="copy-card-head"><span className="copy-rank">#{id}</span><span className="copy-avatar copy-avatar-fallback">{String(endpoint.name || agent.card?.name || '?').slice(0, 1).toUpperCase()}</span><span className="copy-trader-name">{endpoint.name || agent.card?.name || `Agent ${id}`}</span><span className="copy-following-pill"><i /> Available</span></div><p className="copy-agent-description">{endpoint.description || `Market research from ${agent.card?.name || `registered agent #${id}`}. Uses current Perpl market data and explains relevant risk.`}</p><div className="copy-agent-tags">{(endpoint.skills || skills(agent)).slice(0, 3).map((tag: any) => <span key={typeof tag === 'string' ? tag : tag?.name || tag?.id}>{typeof tag === 'string' ? tag : tag?.name || tag?.id}</span>)}</div><div className="copy-agent-meta"><span>Listed price</span><strong>{price(agent)}</strong><span>Reputation</span><strong>{agent.summary ? <><Star size={13} /> {Number(agent.summary.value) / (10 ** agent.summary.decimals)} · {agent.summary.count.toString()} reviews</> : 'No reviews yet'}</strong></div><div className="copy-agent-actions"><button className="copy-track-button" onClick={() => toggle(agent)}>{isFollowed ? <Check size={15} /> : <Bookmark size={15} />}{isFollowed ? 'Saved' : 'Save agent'}</button><button className="primary-button" disabled={!chosenMarket} onClick={() => chosenMarket && onAsk(agent, chosenMarket)}>Ask about {chosenMarket?.symbol || 'market'} <ArrowRight size={14} /></button></div></article>
     })}</div>}
     <p className="copy-note">Saved agents stay on this device. Each message is paid separately; trades are never sent without your review and approval.</p>
   </section>

@@ -565,10 +565,10 @@ const publicBase = (req) => {
 app.get('/agent-card.json', (req, res) => {
   const base = publicBase(req)
   res.json({
-    name: 'Monad Address Inspector',
-    description: 'Live wallet and token due diligence for Monad Testnet.',
-    capabilities: ['Wallet intelligence', 'Token intelligence', 'Transaction verification'],
-    skills: ['Native balance lookup', 'Contract detection', 'Token supply analysis', 'Receipt analysis'],
+    name: 'GentrY Market & Chain Intelligence',
+    description: 'Paid market research and onchain wallet, token, and transaction analysis for Monad Testnet.',
+    capabilities: ['Market research', 'Wallet intelligence', 'Token intelligence', 'Transaction verification'],
+    skills: ['Perpl market signals', 'Funding analysis', 'Native balance lookup', 'Token supply analysis', 'Receipt verification'],
     endpoints: configured ? [{
       name: 'Inspect an address',
       endpoint: `${base}/api/address-inspector`,
@@ -585,8 +585,9 @@ app.get('/agent-card.json', (req, res) => {
       skills: ['Transaction verification', 'Receipt analysis', 'Transfer review'],
       pricing: { amount: price, currency: 'USDC', network: 'Monad Testnet' },
     }, {
-      name: 'Analyze a market signal',
+      name: 'Monad Market Signal Analyst',
       endpoint: `${base}/api/market-signal`,
+      description: 'BTC and other Perpl market research using current prices, price movement, spread, and funding context.',
       skills: ['Live market price', 'Movement analysis', 'Funding review'],
       pricing: { amount: price, currency: 'USDC', network: 'Monad Testnet' },
     }] : [],
