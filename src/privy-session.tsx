@@ -56,7 +56,7 @@ export function PrivySession({ appId, children }: { appId: string; children: Rea
     <PrivyProvider
       appId={appId}
       config={{
-        appearance: { theme: 'light', accentColor: '#5145e5', logo: '/gentry-mark.png' },
+        appearance: { theme: 'light', accentColor: '#5145e5', logo: 'https://gentryworld.up.railway.app/gentry-login.png' },
         loginMethods: ['email', 'google', 'wallet'],
         defaultChain: monadTestnet,
         supportedChains: [monadTestnet],
