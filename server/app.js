@@ -45,7 +45,15 @@ const monad = {
   nativeCurrency: { name: 'MON', symbol: 'MON', decimals: 18 },
   rpcUrls: { default: { http: [rpcUrl] } },
 }
-const publicClient = createPublicClient({ chain: monad, transport: http(rpcUrl, { retryCount: 4, retryDelay: 700 }) })
+let nextRpcRequestAt = 0
+async function pacedRpcFetch(input, init) {
+  const now = Date.now()
+  const scheduledAt = Math.max(now, nextRpcRequestAt)
+  nextRpcRequestAt = scheduledAt + 100
+  if (scheduledAt > now) await new Promise((resolve) => setTimeout(resolve, scheduledAt - now))
+  return fetch(input, init)
+}
+const publicClient = createPublicClient({ chain: monad, transport: http(rpcUrl, { fetchFn: pacedRpcFetch, retryCount: 2, retryDelay: 700 }) })
 
 async function explainMarket(task, market, snapshot) {
   const response = await fetch('https://api.openai.com/v1/responses', {
@@ -83,7 +91,7 @@ app.use((req, res, next) => {
 
 app.post('/api/rpc', express.text({ type: 'application/json', limit: '1mb' }), async (req, res) => {
   try {
-    const upstream = await fetch(rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: req.body })
+    const upstream = await pacedRpcFetch(rpcUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: req.body })
     res.status(upstream.status).type('application/json').send(await upstream.text())
   } catch {
     res.status(502).json({ error: 'Monad Testnet is unavailable.' })
@@ -498,21 +506,21 @@ async function refreshAgentIndex() {
     if (latestId === null) return []
     // Keep a useful recent window while allowing the GentrY reference agent
     // to remain discoverable as new registrations arrive.
-    const count = 48n
+    const count = 24n
     const firstId = latestId + 1n > count ? latestId + 1n - count : 0n
     const ids = Array.from({ length: Number(latestId - firstId + 1n) }, (_, index) => firstId + BigInt(index))
     const referenceAgentId = BigInt(process.env.GENTRY_AGENT_ID || '2280')
     if (referenceAgentId < firstId && await registeredOwner(referenceAgentId)) ids.unshift(referenceAgentId)
-    await new Promise((resolve) => setTimeout(resolve, 1100))
-    // Pace reads beneath the official public RPC's 15 requests/second limit.
+    // Keep public RPC calls below Monad's 15 requests/second cap. Reputation
+    // reads are limited to recent agents and GentrY's reference profile.
     const base = []
     for (const id of ids) {
       const uri = await publicClient.readContract({ address: identityAddress, abi: identityAbi, functionName: 'tokenURI', args: [id] })
-      await new Promise((resolve) => setTimeout(resolve, 90))
       const owner = await registeredOwner(id)
-      await new Promise((resolve) => setTimeout(resolve, 90))
-      const clients = await publicClient.readContract({ address: reputationAddress, abi: reputationAbi, functionName: 'getClients', args: [id] }).catch(() => [])
-      await new Promise((resolve) => setTimeout(resolve, 90))
+      const shouldReadReputation = id >= latestId - 7n || id === referenceAgentId
+      const clients = shouldReadReputation
+        ? await publicClient.readContract({ address: reputationAddress, abi: reputationAbi, functionName: 'getClients', args: [id] }).catch(() => [])
+        : []
       base.push({ id, uri, owner, clients })
     }
     const summaryById = new Map()
@@ -521,7 +529,6 @@ async function refreshAgentIndex() {
         address: reputationAddress, abi: reputationAbi, functionName: 'getSummary', args: [row.id, row.clients, '', ''],
       }).catch(() => null)
       summaryById.set(row.id.toString(), summary)
-      await new Promise((resolve) => setTimeout(resolve, 90))
     }
     const rows = await Promise.all(base.map(async ({ id, uri, owner }) => {
       const card = await fetchProfile(uri)
