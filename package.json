@@ -8,8 +8,7 @@
     "dev:web": "vite --host 0.0.0.0",
     "dev:server": "node --watch server/index.js",
     "build": "tsc -b && vite build",
-    "start": "node server/index.js",
-    "alchemy:logs": "node scripts/alchemy-logs.mjs"
+    "start": "node server/index.js"
   },
   "dependencies": {
     "@reown/appkit": "^1.8.24",

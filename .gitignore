@@ -5,6 +5,5 @@ dist/
 .env.*
 !.env.example
 *.tsbuildinfo
-artifacts/design/
-artifacts/gentry-demo/
-artifacts/reference-frames/
+artifacts/
+.hyperframes/
