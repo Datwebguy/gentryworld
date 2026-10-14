@@ -93,6 +93,21 @@ app.use(express.json({ limit: '16kb' }))
 
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', network: 'Monad Testnet' }))
 
+const lastClientErrorByIp = new Map()
+app.post('/api/client-errors', (req, res) => {
+  const now = Date.now()
+  const ip = req.ip || 'unknown'
+  if (now - (lastClientErrorByIp.get(ip) || 0) < 5000) return res.sendStatus(429)
+  lastClientErrorByIp.set(ip, now)
+  const clean = (value, limit = 1800) => String(value || '').slice(0, limit).replace(/[\r\n]+/g, ' ')
+  const report = req.body && typeof req.body === 'object' ? req.body : {}
+  console.error('[client-render-error]', JSON.stringify({
+    id: clean(report.id, 80), name: clean(report.name, 120), message: clean(report.message),
+    componentStack: clean(report.componentStack), route: clean(report.route, 80),
+  }))
+  res.sendStatus(202)
+})
+
 // Perpl credentials are accepted only for the current request, used in memory,
 // and never logged or persisted. The browser talks to this same-origin proxy
 // because Perpl's authenticated API does not allow browser CORS preflights.
