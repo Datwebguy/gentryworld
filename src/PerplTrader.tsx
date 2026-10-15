@@ -51,7 +51,6 @@ export function PerplTrader({ market, intent, walletAddress, onClose, onNotice }
       const response = await fetch('/api/perpl/account', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ apiKey, privateKey }) })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Could not link your Perpl account.')
-      if (walletAddress && String(payload.address).toLowerCase() !== walletAddress.toLowerCase()) throw new Error('Your connected wallet does not match this Perpl account.')
       const rows = Array.isArray(payload.accounts) ? payload.accounts : []
       if (!rows.length) throw new Error('No Perpl trading account is linked to this wallet yet.')
       setLinkedAddress(String(payload.address || ''))
@@ -70,7 +69,6 @@ export function PerplTrader({ market, intent, walletAddress, onClose, onNotice }
     setBusy('order'); setError(''); setResult(null)
     try {
       if (!linkedAddress) throw new Error('Link your Perpl account first.')
-      if (walletAddress && walletAddress.toLowerCase() !== linkedAddress.toLowerCase()) throw new Error('Your connected wallet does not match this Perpl account.')
       const submittedAt = Date.now()
       const response = await fetch('/api/perpl/order', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
         apiKey, privateKey, address: linkedAddress, marketId: market.id, accountId, direction, action, positionId: Number(positionId), notional: Number(notional), leverage: Number(leverage),

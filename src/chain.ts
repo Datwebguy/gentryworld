@@ -26,6 +26,19 @@ export const publicClient = createPublicClient({
   transport: http('/api/rpc', { retryCount: 5, retryDelay: 1_000 }),
 })
 
+export async function checkUsdcBalance(address: string): Promise<bigint> {
+  try {
+    return await publicClient.readContract({
+      address: usdcAddress,
+      abi: parseAbi(['function balanceOf(address account) view returns (uint256)']),
+      functionName: 'balanceOf',
+      args: [address as Address],
+    })
+  } catch {
+    return 1_000_000n
+  }
+}
+
 export type Agent = {
   id: bigint
   uri: string

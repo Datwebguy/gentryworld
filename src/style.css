@@ -194,7 +194,8 @@ footer > div { display: flex; justify-content: flex-end; gap: 22px; }
 .modal, .agent-drawer { position: relative; width: min(520px, 100%); max-height: calc(100vh - 48px); overflow-y: auto; background: var(--white); border: 1px solid #c9c0b0; border-radius: 17px; box-shadow: 0 28px 80px rgba(23,20,17,.25); }
 .modal { padding: 35px; }
 .agent-drawer { width: min(590px, 100%); padding: 34px; margin-left: auto; margin-right: 0; border-radius: 20px 0 0 20px; height: 100vh; max-height: 100vh; animation: slide-in .25s ease; }
-.close-button { position: absolute; right: 20px; top: 20px; width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: var(--muted); z-index: 2; }
+.close-button { position: sticky; top: 0; float: right; margin-bottom: -34px; width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 9px; background: var(--white); color: var(--muted); z-index: 20; cursor: pointer; transition: color .15s, border-color .15s; }
+.close-button:hover { color: var(--ink); border-color: var(--ink); }
 .modal h2 { font-size: 34px; letter-spacing: -.055em; margin: 12px 0; }
 .modal > p { color: var(--muted); font-size: 13px; line-height: 1.65; margin: 0 0 25px; }
 .modal form { display: flex; flex-direction: column; gap: 10px; }
