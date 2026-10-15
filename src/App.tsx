@@ -381,7 +381,16 @@ export default function App() {
       const task = `${transcript ? `Conversation so far:\n${transcript}\n\n` : ''}User: ${userText}\nAgent: Reply to the user’s latest message. Use the current ${chatSession.market.symbol} Monad Testnet perpetual market context when relevant.`
       const url = chatSession.endpoint.endpoint || chatSession.endpoint.url || ''
       const response = await wrapFetchWithPayment(fetch, client)(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ task, marketSymbol: chatSession.market.symbol }) })
-      if (!response.ok) throw new Error(`request ${response.status}`)
+      if (!response.ok) {
+        let errMessage = ''
+        try {
+          const errPayload = await response.json()
+          errMessage = errPayload?.error || errPayload?.message || ''
+        } catch {
+          errMessage = await response.text().catch(() => '')
+        }
+        throw new Error(errMessage || `Request failed with status ${response.status}`)
+      }
       const receipt = response.headers.get('payment-response') || response.headers.get('x-payment-response')
       if (!receipt) throw new Error('missing settlement')
       const settlement = decodePaymentResponseHeader(receipt) as any
@@ -395,12 +404,17 @@ export default function App() {
       setChatLastResult({ result, paymentTx, request: userText })
       setChatInput('')
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message.toLowerCase() : ''
-      setNotice(message.includes('user rejected') || message.includes('user denied')
-        ? 'Payment approval was cancelled. No payment was sent.'
-        : message.includes('unconfirmed') || message.includes('settlement') || message.includes('balance') || message.includes('exceeds')
+      const message = cause instanceof Error ? cause.message : String(cause || '')
+      const lower = message.toLowerCase()
+      setNotice(lower.includes('user rejected') || lower.includes('user denied') || lower.includes('rejected by user')
+        ? 'Payment approval was cancelled in your wallet. No payment was sent.'
+        : lower.includes('insufficient') || lower.includes('exceeds balance') || lower.includes('balance')
+        ? 'Your wallet has insufficient testnet USDC to pay for this request. Top up from the Monad testnet faucet.'
+        : lower.includes('unconfirmed') || lower.includes('settlement')
         ? 'Payment could not be settled on Monad Testnet. Verify that your wallet has testnet USDC and MON.'
-        : 'The request did not finish. Check your wallet activity before retrying.')
+        : message && !lower.includes('request failed with status 500') && !lower.includes('request failed with status 502')
+        ? message
+        : 'The request did not finish. Check your wallet activity and testnet USDC balance before retrying.')
     } finally { setChatBusy(false) }
   }
 
@@ -482,7 +496,16 @@ export default function App() {
       const response = await wrapFetchWithPayment(fetch, client)(url, {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ task: input }),
       })
-      if (!response.ok) throw new Error(`request ${response.status}`)
+      if (!response.ok) {
+        let errMessage = ''
+        try {
+          const errPayload = await response.json()
+          errMessage = errPayload?.error || errPayload?.message || ''
+        } catch {
+          errMessage = await response.text().catch(() => '')
+        }
+        throw new Error(errMessage || `Request failed with status ${response.status}`)
+      }
       const receipt = response.headers.get('payment-response') || response.headers.get('x-payment-response')
       if (!receipt) throw new Error('missing settlement')
       const settlement = decodePaymentResponseHeader(receipt) as any
@@ -494,12 +517,17 @@ export default function App() {
       setHireRequest(null); setSelected(null); setHireInput('')
       setSignalMarket(null)
     } catch (cause) {
-      const message = cause instanceof Error ? cause.message.toLowerCase() : ''
-      setNotice(message.includes('user rejected') || message.includes('user denied')
+      const message = cause instanceof Error ? cause.message : String(cause || '')
+      const lower = message.toLowerCase()
+      setNotice(lower.includes('user rejected') || lower.includes('user denied') || lower.includes('rejected by user')
         ? 'Payment was cancelled.'
-        : message.includes('unconfirmed') || message.includes('settlement') || message.includes('balance') || message.includes('exceeds')
+        : lower.includes('insufficient') || lower.includes('exceeds balance') || lower.includes('balance')
+        ? 'Your wallet has insufficient testnet USDC to pay for this request. Top up from the Monad testnet faucet.'
+        : lower.includes('unconfirmed') || lower.includes('settlement')
         ? 'Payment could not be settled on Monad Testnet. Verify that your wallet has testnet USDC and MON.'
-        : 'The request could not be completed. Check your wallet activity before retrying.')
+        : message && !lower.includes('request failed with status 500') && !lower.includes('request failed with status 502')
+        ? message
+        : 'The request could not be completed. Check your wallet activity and testnet USDC balance before retrying.')
     } finally { setBusy(null) }
   }
 
