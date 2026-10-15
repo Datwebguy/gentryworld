@@ -251,8 +251,8 @@ export function PerplTrader({ market, intent, walletAddress: _walletAddress, onC
           <p>Set up your Perpl account:</p>
           <ol>
             <li>Open your <a href="https://testnet.perpl.xyz/apikeys" target="_blank" rel="noreferrer">Perpl Account Settings <ArrowUpRight size={11} style={{ display: 'inline' }} /></a> in a new tab.</li>
-            <li>Create a Perpl smart-contract account, then turn on <strong>Order Forwarding</strong>.</li>
-            <li>Create an API key for GentrY’s origin and paste the key plus its signing key below.</li>
+            <li>Deposit USDC in Perpl to activate your trading account, then enable <strong>One-Click Trading</strong>.</li>
+            <li>Pair the connected Privy wallet below, or use a Perpl API key you already enrolled.</li>
           </ol>
         </div>
 
