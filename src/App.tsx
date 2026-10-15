@@ -60,9 +60,25 @@ function endpointsOf(agent: Agent): AgentEndpoint[] {
 }
 
 function marketResearchEndpoint(agent: Agent): AgentEndpoint | undefined {
-  return endpointsOf(agent).find((endpoint) =>
-    /market|signal|research|analysis/i.test([endpoint.name, endpoint.endpoint, endpoint.url, ...(endpoint.skills || [])].join(' ')),
-  )
+  const endpoints = endpointsOf(agent)
+  const isInspector = (ep: AgentEndpoint) => {
+    const text = [ep.name, ep.endpoint, ep.url].join(' ').toLowerCase()
+    return text.includes('token-inspector') || text.includes('address-inspector') || text.includes('transaction-inspector') ||
+      text.includes('inspect a token') || text.includes('inspect an address') || text.includes('verify a transaction')
+  }
+
+  const specific = endpoints.find((ep) => {
+    if (isInspector(ep)) return false
+    const text = [ep.name, ep.endpoint, ep.url].join(' ').toLowerCase()
+    return text.includes('market-signal') || text.includes('market signal') || text.includes('signal analyst') || text.includes('market research')
+  })
+  if (specific) return specific
+
+  return endpoints.find((ep) => {
+    if (isInspector(ep)) return false
+    const text = [ep.name, ep.endpoint, ep.url, ep.description, ...(Array.isArray(ep.skills) ? ep.skills : [])].join(' ').toLowerCase()
+    return /market[- ]signal|market[- ]research|perpl|market[- ]price|funding review/i.test(text)
+  })
 }
 
 function uniquePayableProfiles(agents: Agent[]) {

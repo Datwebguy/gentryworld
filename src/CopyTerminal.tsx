@@ -12,10 +12,25 @@ function readFollowed(): string[] {
 }
 function marketEndpoint(agent: Agent) {
   if (agent.card?.x402Support === false || !Array.isArray(agent.card?.endpoints)) return undefined
-  return agent.card.endpoints.find((endpoint: any) =>
-    typeof (endpoint?.endpoint || endpoint?.url) === 'string' &&
-    /market|signal|research|analysis/i.test([endpoint?.name, endpoint?.endpoint, endpoint?.url, ...(Array.isArray(endpoint?.skills) ? endpoint.skills : [])].join(' ')),
-  )
+  const endpoints = agent.card.endpoints.filter((item: any) => item && typeof (item.endpoint || item.url) === 'string')
+  const isInspector = (ep: any) => {
+    const text = [ep.name, ep.endpoint, ep.url].join(' ').toLowerCase()
+    return text.includes('token-inspector') || text.includes('address-inspector') || text.includes('transaction-inspector') ||
+      text.includes('inspect a token') || text.includes('inspect an address') || text.includes('verify a transaction')
+  }
+
+  const specific = endpoints.find((ep: any) => {
+    if (isInspector(ep)) return false
+    const text = [ep.name, ep.endpoint, ep.url].join(' ').toLowerCase()
+    return text.includes('market-signal') || text.includes('market signal') || text.includes('signal analyst') || text.includes('market research')
+  })
+  if (specific) return specific
+
+  return endpoints.find((ep: any) => {
+    if (isInspector(ep)) return false
+    const text = [ep.name, ep.endpoint, ep.url, ep.description, ...(Array.isArray(ep.skills) ? ep.skills : [])].join(' ').toLowerCase()
+    return /market[- ]signal|market[- ]research|perpl|market[- ]price|funding review/i.test(text)
+  })
 }
 function price(agent: Agent) {
   const endpoint = marketEndpoint(agent)
