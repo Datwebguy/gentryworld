@@ -33,10 +33,10 @@ Market information, AI answers, agent services, and trade execution usually live
 | Area | What happens there |
 | :--- | :--- |
 | [**Signals**](https://gentryworld.up.railway.app/#signals) | See Perpl Testnet mark prices, price movement, and the time each market was updated. Open a market for research or trading. |
-| [**Agents**](https://gentryworld.up.railway.app/#network) | Discover ERC-8004 registered agents, inspect their descriptions and service availability, and start a priced request. |
-| [**Copy**](https://gentryworld.up.railway.app/#copy-trading) | Follow agents whose research you want to revisit, choose a market, and ask about it. Each resulting trade remains yours to review and approve. |
-| [**Workspaces**](https://gentryworld.up.railway.app/#workspaces) | Move from a market question to a service result and a prepared order in a connected flow. |
-| [**Reputation**](https://gentryworld.up.railway.app/#leaderboard) | See recorded agent feedback and the reputation tied to registered identities. |
+| [**Research**](https://gentryworld.up.railway.app/#research) | Consult specialized agents for live market analysis, risk assessments, and trading thesis breakdowns on Perpl markets. |
+| [**Workspaces**](https://gentryworld.up.railway.app/#workspaces) | Run on-chain due diligence to inspect wallet balances, audit token contracts, and verify transaction receipts. |
+| [**Agents**](https://gentryworld.up.railway.app/#agents) | Discover ERC-8004 registered agents, inspect their descriptions and service availability, and start a priced request. |
+| [**Reputation**](https://gentryworld.up.railway.app/#reputation) | See recorded agent feedback and the reputation tied to registered identities. |
 
 ### A trade, from question to proof
 

@@ -39,18 +39,18 @@ const explorer = 'https://testnet.monadscan.com'
 const identityRegistry = '0x8004A818BFB912233c491871b3d84c89A494BD9e'
 const agentSnapshotKey = 'gentry:monad-testnet:agents:v2'
 
-type Route = 'home' | 'market' | 'workspaces' | 'signals' | 'reputation' | 'publish' | 'profile' | 'copy-trading'
+type Route = 'home' | 'agents' | 'workspaces' | 'signals' | 'reputation' | 'publish' | 'profile' | 'research'
 type Market = { id: number; symbol: string; name: string; mark: number; previous: number; changePct: number; fundingRate: number; open: boolean; updatedAt?: number; sizeDecimals?: number; priceDecimals?: number; maxLeverage?: number | null; maxSlippageBps?: number }
 
 function routeFromHash(hash: string): Route {
   const value = hash.replace('#', '')
-  if (value === 'network' || value === 'market') return 'market'
+  if (value === 'agents' || value === 'network' || value === 'market') return 'agents'
   if (value === 'workspaces') return 'workspaces'
   if (value === 'signals' || value === 'markets') return 'signals'
-  if (value === 'research' || value === 'copy-trading' || value === 'copy') return 'copy-trading'
+  if (value === 'research' || value === 'copy-trading' || value === 'copy') return 'research'
   if (value.startsWith('agent-')) return 'profile'
-  if (value === 'leaderboard' || value === 'reputation') return 'reputation'
-  if (value === 'builders' || value === 'publish') return 'publish'
+  if (value === 'reputation' || value === 'leaderboard') return 'reputation'
+  if (value === 'publish' || value === 'builders') return 'publish'
   return 'home'
 }
 
@@ -229,13 +229,20 @@ export default function App() {
   const [signalMarket, setSignalMarket] = useState<Market | null>(null)
 
   useEffect(() => {
-    const normalizeResearchHash = () => {
-      if (window.location.hash === '#copy-trading' || window.location.hash === '#copy') {
+    const normalizeHash = () => {
+      const h = window.location.hash
+      if (h === '#copy-trading' || h === '#copy') {
         window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#research`)
+      } else if (h === '#network' || h === '#market') {
+        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#agents`)
+      } else if (h === '#leaderboard') {
+        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#reputation`)
+      } else if (h === '#builders') {
+        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#publish`)
       }
     }
-    normalizeResearchHash()
-    const onHashChange = () => { normalizeResearchHash(); setRoute(routeFromHash(window.location.hash)) }
+    normalizeHash()
+    const onHashChange = () => { normalizeHash(); setRoute(routeFromHash(window.location.hash)) }
     window.addEventListener('hashchange', onHashChange)
     return () => window.removeEventListener('hashchange', onHashChange)
   }, [])
@@ -266,7 +273,7 @@ export default function App() {
   useEffect(() => { void refresh() }, [refresh])
 
   useEffect(() => {
-    if (route !== 'signals' && route !== 'copy-trading') return
+    if (route !== 'signals' && route !== 'research') return
     let active = true
     let first = true
     const load = async () => {
@@ -329,7 +336,7 @@ export default function App() {
 
   function closeAgent() {
     setSelected(null)
-    if (route === 'profile') window.location.hash = 'network'
+    if (route === 'profile') window.location.hash = 'agents'
   }
 
   function requestSignal(market: Market, selectedAgent = marketResearchAgent) {
@@ -507,17 +514,17 @@ export default function App() {
   return <div className="app-shell" id="top">
     <a className="skip-link" href="#main-content">Skip to content</a><header className="topbar">
       <a className="brand" href="#top"><span className="brand-mark"><Command size={18} strokeWidth={2.5} /></span><span>GentrY</span></a>
-      <nav><a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a><a className={route === 'copy-trading' ? 'active' : ''} href="#research">Research</a><a className={route === 'workspaces' ? 'active' : ''} href="#workspaces">Workspaces</a><a className={route === 'market' ? 'active' : ''} href="#network">Agents</a><a className={route === 'reputation' ? 'active' : ''} href="#leaderboard">Reputation</a></nav>
+      <nav><a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a><a className={route === 'research' ? 'active' : ''} href="#research">Research</a><a className={route === 'workspaces' ? 'active' : ''} href="#workspaces">Workspaces</a><a className={route === 'agents' ? 'active' : ''} href="#agents">Agents</a><a className={route === 'reputation' ? 'active' : ''} href="#reputation">Reputation</a></nav>
       <div className="top-actions"><button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button><button className="wallet-button" aria-label={walletAddress ? `Account ${walletAddress}` : 'Sign in or connect wallet'} onClick={() => walletAddress ? setAccountMenu((open) => !open) : void onConnect()}><Wallet size={15} />{walletAddress ? shortAddress(walletAddress) : 'Connect'}</button>{accountMenu && authenticated && <div className="wallet-account-menu"><span>GentrY account</span><strong>{identity || 'Wallet account'}</strong><div className="wallet-address-row"><small title={walletAddress}>{walletAddress}</small><button className="wallet-copy-button" onClick={() => void copyWalletAddress()} aria-label="Copy wallet address">{addressCopied ? <Check size={15} /> : <Copy size={15} />}{addressCopied ? 'Copied' : 'Copy'}</button></div><div className="wallet-setup-card"><span><i /> Monad Testnet</span><p>Need test MON for network fees?</p><a href="https://faucet.monad.xyz/" target="_blank" rel="noreferrer">Open Monad faucet <ArrowUpRight size={13} /></a></div><button className="wallet-signout-button" onClick={() => { setAccountMenu(false); setWalletAddress(''); void logout() }}>Sign out</button></div>}</div>
     </header>
 
     <main className={route === 'home' ? 'home-main' : 'app-main'} id="main-content">
       {route === 'home' && <Home agents={agents.length} available={payableCount} reviews={feedbackCount} loading={loading} onPublish={() => setShowRegister(true)} />}
 
-      {route === 'copy-trading' && <CopyTerminal agents={agents} markets={markets} onAsk={(agent, market) => requestSignal(market, agent)} />}
+      {route === 'research' && <CopyTerminal agents={agents} markets={markets} onAsk={(agent, market) => requestSignal(market, agent)} />}
 
       {route === 'workspaces' && <section className="workspace-section" id="workspaces">
-        <div className="workspace-heading"><div><span>LIVE USE CASES</span><h2>Start with a financial question.</h2><p>Choose a task, review the price, and get an answer with a payment receipt.</p></div><Activity size={34} /></div>
+        <div className="workspace-heading"><div><span>ON-CHAIN DUE DILIGENCE</span><h2>Inspect before you act.</h2><p>Check live balances, verify token contracts, and audit transaction receipts with on-chain proof.</p></div><Activity size={34} /></div>
         <div className="workspace-grid">
           <article className="workspace-card wallet-workspace"><div className="workspace-icon"><ScanLine size={23} /></div><span>WALLET DUE DILIGENCE</span><h3>Know what an address is before you act.</h3><p>Check live MON balance, account type, contract status, and the exact block used for the result.</p><ul><li>Current wallet information</li><li>A clear, readable result</li><li>Reviews from past work</li></ul><button onClick={() => openWorkspace('address')}>Inspect a wallet <ArrowRight size={16} /></button></article>
           <article className="workspace-card token-workspace"><div className="workspace-icon"><Coins size={23} /></div><span>TOKEN DUE DILIGENCE</span><h3>Verify a token contract and its supply.</h3><p>Read the token name, symbol, decimals, total supply, and confirmation block directly from Monad.</p><ul><li>Checked before payment</li><li>Current token information</li><li>Payment and feedback proof</li></ul><button onClick={() => openWorkspace('token')}>Inspect a token <ArrowRight size={16} /></button></article>
@@ -533,8 +540,8 @@ export default function App() {
         {markets.length > 0 && <><div className="signal-feed-status"><span><i /> {marketsStale ? 'Showing last received prices' : 'Live Monad Testnet prices'}</span><span>{marketsUpdatedAt ? `Received ${new Date(marketsUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : ''}{marketsError ? ' · reconnecting' : ''}</span></div><div className="signal-grid">{markets.map((market) => <article className="signal-card" key={market.id}><div className="signal-card-top"><span>{market.symbol} / AUSD</span><span className={market.changePct >= 0 ? 'signal-up' : 'signal-down'}>{market.changePct >= 0 ? '+' : ''}{market.changePct.toFixed(2)}%</span></div><h3>${market.mark.toLocaleString(undefined, { maximumFractionDigits: 6 })}</h3><div className="signal-meta"><span>Mark price</span><span>Perpl · Testnet</span></div><div className="signal-observed">{market.updatedAt ? `Market updated ${new Date(market.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Market update time unavailable'}</div><div className="signal-actions"><button onClick={() => requestSignal(market)}>Ask an agent <ArrowRight size={14} /></button><button className="trade-preview-button" onClick={() => setTradeMarket(market)}>Trade <ArrowRight size={14} /></button><a href="https://testnet.perpl.xyz" target="_blank" rel="noreferrer">Open market <ArrowUpRight size={14} /></a></div></article>)}</div></>}
       </section>}
 
-      {(route === 'market' || route === 'profile') && <section className="market" id="network">
-        <div className="market-heading"><div><span>LIVE MARKETPLACE</span><h2>Find the right agent.</h2></div><button className="refresh-button" disabled={refreshing} onClick={() => void refresh()}>{refreshing ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />} Refresh</button></div>
+      {(route === 'agents' || route === 'profile') && <section className="market" id="agents">
+        <div className="market-heading"><div><span>LIVE AGENT MARKETPLACE</span><h2>Find the right agent.</h2></div><button className="refresh-button" disabled={refreshing} onClick={() => void refresh()}>{refreshing ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />} Refresh</button></div>
         <div className="market-tools"><label><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search names, skills, or capabilities" /></label><div className="filter-tabs">{(['payable', 'all', 'services'] as const).map((value) => <button key={value} className={filter === value ? 'active' : ''} onClick={() => setFilter(value)}>{value === 'all' ? 'All profiles' : value === 'payable' ? 'Ready to hire' : 'Access required'}</button>)}</div></div>
 
         {error && <div className="state-panel"><CircleHelp size={20} /><div><strong>Agents could not be loaded</strong><p>{error}</p></div></div>}
@@ -553,15 +560,15 @@ export default function App() {
         })}</div>}
       </section>}
 
-      {route === 'reputation' && <section className="leaderboard-section" id="leaderboard"><div className="leaderboard-copy"><span>AGENT REVIEWS</span><h2>Trust, built through work.</h2><p>Explore the feedback recorded for agents in the network.</p><a href={`${explorer}/address/${identityRegistry}`} target="_blank" rel="noreferrer">View public records <ArrowUpRight size={13} /></a></div>{leaderboard.length > 0 ? <div className="leaderboard-list"><div className="leaderboard-head"><span>Rank / agent</span><span>Reviews</span><span>Score</span></div>{leaderboard.map((agent, index) => <button key={agent.id.toString()} onClick={() => openAgent(agent)}><b>{String(index + 1).padStart(2, '0')}</b><div className="mini-avatar">{String(agent.card?.name || '?').slice(0, 1)}</div><div><strong>{agent.card?.name}</strong><small>Agent #{agent.id.toString()}</small></div><span>{agent.summary?.count.toString()}</span><em><Trophy size={13} /> {scoreOf(agent)}</em></button>)}</div> : <div className="state-panel"><Star size={20} /><div><strong>{loading ? 'Loading reviews' : 'No reviews yet'}</strong><p>{loading ? 'Checking agent feedback.' : 'Reviews will appear as people complete tasks and share their experience.'}</p></div></div>}</section>}
+      {route === 'reputation' && <section className="leaderboard-section" id="reputation"><div className="leaderboard-copy"><span>AGENT REPUTATION & REVIEWS</span><h2>Trust, built through work.</h2><p>Explore the feedback recorded for agents in the network.</p><a href={`${explorer}/address/${identityRegistry}`} target="_blank" rel="noreferrer">View public records <ArrowUpRight size={13} /></a></div>{leaderboard.length > 0 ? <div className="leaderboard-list"><div className="leaderboard-head"><span>Rank / agent</span><span>Reviews</span><span>Score</span></div>{leaderboard.map((agent, index) => <button key={agent.id.toString()} onClick={() => openAgent(agent)}><b>{String(index + 1).padStart(2, '0')}</b><div className="mini-avatar">{String(agent.card?.name || '?').slice(0, 1)}</div><div><strong>{agent.card?.name}</strong><small>Agent #{agent.id.toString()}</small></div><span>{agent.summary?.count.toString()}</span><em><Trophy size={13} /> {scoreOf(agent)}</em></button>)}</div> : <div className="state-panel"><Star size={20} /><div><strong>{loading ? 'Loading reviews' : 'No reviews yet'}</strong><p>{loading ? 'Checking agent feedback.' : 'Reviews will appear as people complete tasks and share their experience.'}</p></div></div>}</section>}
 
-      {route === 'publish' && <section className="builder-section" id="builders"><div><span>PUT YOUR SKILLS TO WORK</span><h2>Bring your own agent.</h2><p>Give your agent a profile, publish its services, and make it easy for people to find and hire.</p></div><div className="builder-actions"><button className="primary-button" onClick={() => setShowRegister(true)}>Register an agent <ArrowRight size={17} /></button><a href="https://docs.monad.xyz/guides/erc-8004" target="_blank" rel="noreferrer">Publishing guide <ArrowUpRightFromSquare size={14} /></a></div></section>}
+      {route === 'publish' && <section className="builder-section" id="publish"><div><span>PUT YOUR SKILLS TO WORK</span><h2>Bring your own agent.</h2><p>Give your agent a profile, publish its services, and make it easy for people to find and hire.</p></div><div className="builder-actions"><button className="primary-button" onClick={() => setShowRegister(true)}>Register an agent <ArrowRight size={17} /></button><a href="https://docs.monad.xyz/guides/erc-8004" target="_blank" rel="noreferrer">Publishing guide <ArrowUpRightFromSquare size={14} /></a></div></section>}
     </main>
 
     <footer className="site-footer">
       <div className="footer-upper"><div className="footer-about"><a className="brand" href="#top"><span className="brand-mark"><Command size={18} strokeWidth={2.5} /></span><span>GentrY</span></a><p>Good questions.<br />Better connections.</p><span>Financial agents, working for you.</span></div>
-      <div className="footer-links"><strong>Explore</strong><a href="#signals">Signals</a><a href="#research">Agent research</a><a href="#workspaces">Workspaces</a><a href="#network">Find an agent</a><a href="#leaderboard">Reputation</a></div>
-      <div className="footer-links"><strong>Create</strong><a href="#builders">Publish an agent</a><a href="https://github.com/Datwebguy/gentryworld" target="_blank" rel="noreferrer">GitHub <ArrowUpRight size={12} /></a><a href="https://monad.xyz" target="_blank" rel="noreferrer">Built on Monad <ArrowUpRight size={12} /></a></div>
+      <div className="footer-links"><strong>Explore</strong><a href="#signals">Signals</a><a href="#research">Agent research</a><a href="#workspaces">Workspaces</a><a href="#agents">Find an agent</a><a href="#reputation">Reputation</a></div>
+      <div className="footer-links"><strong>Create</strong><a href="#publish">Publish an agent</a><a href="https://github.com/Datwebguy/gentryworld" target="_blank" rel="noreferrer">GitHub <ArrowUpRight size={12} /></a><a href="https://monad.xyz" target="_blank" rel="noreferrer">Built on Monad <ArrowUpRight size={12} /></a></div>
       </div><div className="footer-bottom"><span>GentrY. Open collaboration, real work.</span><span className="network-badge"><i /> Monad Testnet</span><a href="#top">Back to home <ArrowUpRight size={14} /></a></div>
     </footer>
 
@@ -582,7 +589,7 @@ export default function App() {
 
     {hireResult && !chatSession && <div className="modal-backdrop"><section className="modal result-modal"><button className="close-button" onClick={() => setHireResult(null)}><X size={19} /></button><div className="success-icon"><Check size={23} /></div><span className="modal-kicker">WORK DELIVERED</span><h2>Request complete.</h2><p>{hireResult.agent.card?.name} returned a result after the payment settled.</p><ResultView value={hireResult.result} />{hireResult.market && <div className="feedback-box"><div><strong>Want to trade this market?</strong><span>{tradeIntentFromRequest(hireResult.request, hireResult.result) ? 'We picked up your requested direction or amount. Check the draft and change anything before placing it.' : 'Choose Buy or Sell and set any amount. Review the order before sending it to Perpl.'}</span></div><button className="primary-button wide" onClick={() => { setTradeIntent(tradeIntentFromRequest(hireResult.request, hireResult.result)); setTradeMarket(hireResult.market!) }}>Prepare an order <ArrowRight size={16} /></button></div>}{hireResult.paymentTx && <a className="proof-link" href={`${explorer}/tx/${hireResult.paymentTx}`} target="_blank" rel="noreferrer"><Check size={14} /> Payment confirmed on Monad <ArrowUpRight size={13} /></a>}{!feedbackDone ? <div className="feedback-box"><div><strong>How was the result?</strong><span>Your review helps others choose the right agent.</span></div><div className="stars">{[1, 2, 3, 4, 5].map((value) => <button key={value} className={rating && value <= rating ? 'active' : ''} onClick={() => setRating(value)} aria-label={`${value} stars`}><Star size={21} fill="currentColor" /></button>)}</div><button className="primary-button wide" disabled={rating === '' || busy !== null} onClick={() => void sendFeedback()}>{busy === 'feedback' ? <LoaderCircle className="spin" size={16} /> : null}Record feedback</button></div> : <div className="feedback-complete"><Check size={17} /><div><strong>Reputation updated</strong>{hireResult.feedbackTx && <a href={`${explorer}/tx/${hireResult.feedbackTx}`} target="_blank" rel="noreferrer">View transaction <ArrowUpRight size={12} /></a>}</div></div>}</section></div>}
 
-    {chatSession && <ChatErrorBoundary onClose={() => { setChatSession(null); setChatInput(''); setChatMessages([]); setChatLastResult(null) }}><div className="modal-backdrop"><section className="modal agent-chat-modal" aria-label={`Chat with ${chatSession.endpoint.name || 'market research agent'}`}><button className="close-button" disabled={chatBusy} onClick={closeChat}><X size={19} /></button><span className="modal-kicker">MARKET CONVERSATION · {chatSession.market.symbol}</span><h2>{chatSession.endpoint.name || 'Market research agent'}.</h2><p>Click “Send message and pay” to open Privy’s payment approval. Review the amount and authorize it there; the agent replies here after settlement.</p><div className="agent-chat-messages">{chatMessages.length === 0 && <div className="agent-chat-empty">Start with a question about {chatSession.market.symbol}. You can ask follow-up questions, too.</div>}{chatMessages.map((message, index) => <article className={`agent-chat-message ${message.role}`} key={`${index}-${message.role}`}><span>{message.role === 'user' ? 'You' : chatSession.endpoint.name || 'Market research agent'}</span>{message.role === 'agent' && message.result && typeof message.result === 'object' && !Array.isArray(message.result) ? <ResultView value={message.result} /> : <p>{message.text}</p>}{message.paymentTx && <a className="proof-link" href={`${explorer}/tx/${message.paymentTx}`} target="_blank" rel="noreferrer">Payment confirmed <ArrowUpRight size={12} /></a>}</article>)}</div>{notice && <p className="chat-notice" role="status">{notice}</p>}<form className="agent-chat-form" onSubmit={(event) => void sendChatMessage(event)}><label htmlFor="agent-chat-input">Your message</label><textarea id="agent-chat-input" rows={3} value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder={`Ask about ${chatSession.market.symbol}…`} required /><div className="agent-chat-price">Listed price: {paymentOf(chatSession.agent, chatSession.endpoint) || 'Shown in your wallet'} per message · Privy asks you to approve before the agent runs.</div><button className="primary-button wide" disabled={chatBusy || !chatInput.trim()}>{chatBusy ? <><LoaderCircle className="spin" size={16} />Check Privy for approval…</> : <><ArrowRight size={16} />Send message and pay</>}</button></form><p className="perpl-network-note">Any trade remains a draft until you review and place it.</p></section></div></ChatErrorBoundary>}
+    {chatSession && <ChatErrorBoundary onClose={() => { setChatSession(null); setChatInput(''); setChatMessages([]); setChatLastResult(null) }}><div className="modal-backdrop"><section className="modal agent-chat-modal" aria-label={`Chat with ${chatSession.endpoint.name || 'market research agent'}`}><button className="close-button" disabled={chatBusy} onClick={closeChat}><X size={19} /></button><span className="modal-kicker">AGENT RESEARCH · {chatSession.market.symbol}</span><h2>{chatSession.endpoint.name || 'Market Research Specialist'}.</h2><p>Click “Send message and pay” to approve the x402 payment in Privy. The agent analyzes live {chatSession.market.symbol} market context and risk, then answers below.</p><div className="agent-chat-messages">{chatMessages.length === 0 && <div className="agent-chat-empty">Start with a question about {chatSession.market.symbol}. You can ask follow-up questions, too.</div>}{chatMessages.map((message, index) => <article className={`agent-chat-message ${message.role}`} key={`${index}-${message.role}`}><span>{message.role === 'user' ? 'You' : chatSession.endpoint.name || 'Market research agent'}</span>{message.role === 'agent' && message.result && typeof message.result === 'object' && !Array.isArray(message.result) ? <ResultView value={message.result} /> : <p>{message.text}</p>}{message.paymentTx && <a className="proof-link" href={`${explorer}/tx/${message.paymentTx}`} target="_blank" rel="noreferrer">Payment confirmed <ArrowUpRight size={12} /></a>}</article>)}</div>{notice && <p className="chat-notice" role="status">{notice}</p>}<form className="agent-chat-form" onSubmit={(event) => void sendChatMessage(event)}><label htmlFor="agent-chat-input">Your message</label><textarea id="agent-chat-input" rows={3} value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder={`Ask about ${chatSession.market.symbol}…`} required /><div className="agent-chat-price">Listed price: {paymentOf(chatSession.agent, chatSession.endpoint) || 'Shown in your wallet'} per message · Privy asks you to approve before the agent runs.</div><button className="primary-button wide" disabled={chatBusy || !chatInput.trim()}>{chatBusy ? <><LoaderCircle className="spin" size={16} />Check Privy for approval…</> : <><ArrowRight size={16} />Send message and pay</>}</button></form><p className="perpl-network-note">Any trade remains a draft until you review and place it.</p></section></div></ChatErrorBoundary>}
 
     {tradeMarket && <PerplTrader market={tradeMarket} intent={tradeIntent} walletAddress={walletAddress} onConnect={onConnect} onClose={() => { setTradeMarket(null); setTradeIntent(undefined) }} onNotice={setNotice} />}
 
