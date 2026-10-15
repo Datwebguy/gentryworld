@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { ArrowUpRight, Check, Copy, KeyRound, LoaderCircle, LockKeyhole, Zap, X } from 'lucide-react'
+import { ArrowUpRight, Check, KeyRound, LoaderCircle, LockKeyhole, X } from 'lucide-react'
 
 type Market = {
   id: number; symbol: string; mark: number; sizeDecimals?: number; priceDecimals?: number; maxLeverage?: number | null; maxSlippageBps?: number
@@ -22,8 +22,7 @@ const money = (value: number) => `$${value.toLocaleString(undefined, { minimumFr
 const SAVED_API_KEY = 'gentry:perpl:apiKey'
 const SAVED_PRIVATE_KEY = 'gentry:perpl:privateKey'
 
-export function PerplTrader({ market, intent, walletAddress, onClose, onNotice }: Props) {
-  const [mode, setMode] = useState<'direct' | 'api'>('direct')
+export function PerplTrader({ market, intent, walletAddress: _walletAddress, onClose, onNotice }: Props) {
   const [apiKey, setApiKey] = useState(() => {
     try { return localStorage.getItem(SAVED_API_KEY) || '' } catch { return '' }
   })
@@ -31,7 +30,6 @@ export function PerplTrader({ market, intent, walletAddress, onClose, onNotice }
     try { return localStorage.getItem(SAVED_PRIVATE_KEY) || '' } catch { return '' }
   })
   const [rememberKeys, setRememberKeys] = useState(true)
-  const [copiedPlan, setCopiedPlan] = useState(false)
   const [accounts, setAccounts] = useState<PerplAccount[]>([])
   const [positions, setPositions] = useState<Position[]>([])
   const [fills, setFills] = useState<PerplFill[]>([])
@@ -61,11 +59,12 @@ export function PerplTrader({ market, intent, walletAddress, onClose, onNotice }
     return { size, collateral, liqMovePct, estLiquidation }
   }, [notional, leverage, market.mark, direction])
 
+  // Automatically authenticate if keys already saved on this device
   useEffect(() => {
-    if (apiKey && privateKey && !accounts.length && mode === 'api') {
+    if (apiKey.trim() && privateKey.trim() && !accounts.length) {
       void loadAccount()
     }
-  }, [mode])
+  }, [])
 
   function forgetCredentials() {
     setApiKey('')
@@ -73,6 +72,7 @@ export function PerplTrader({ market, intent, walletAddress, onClose, onNotice }
     setAccounts([])
     setPositions([])
     setLinkedAddress('')
+    setResult(null)
     try {
       localStorage.removeItem(SAVED_API_KEY)
       localStorage.removeItem(SAVED_PRIVATE_KEY)
@@ -80,41 +80,34 @@ export function PerplTrader({ market, intent, walletAddress, onClose, onNotice }
     setError('')
   }
 
-  async function copyPlan() {
-    const lev = Number(leverage) || 1
-    const sizeStr = estimate ? `${estimate.size.toFixed(market.sizeDecimals ?? 4)} ${market.symbol}` : ''
-    const text = `GentrY Trade Plan: ${market.symbol} ${direction.toUpperCase()} | Sizing: $${notional} (${sizeStr}) | Leverage: ${lev}x | Mark: ${money(market.mark)}`
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopiedPlan(true)
-      setTimeout(() => setCopiedPlan(false), 2000)
-    } catch {
-      onNotice('Trade plan: ' + text)
-    }
-  }
-
   async function loadAccount(event?: FormEvent) {
     event?.preventDefault()
     setBusy('account'); setError(''); setAccounts([]); setPositions([]); setFills([])
     try {
-      const response = await fetch('/api/perpl/account', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ apiKey, privateKey }) })
+      const trimmedKey = apiKey.trim()
+      const trimmedSecret = privateKey.trim()
+      const response = await fetch('/api/perpl/account', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ apiKey: trimmedKey, privateKey: trimmedSecret }),
+      })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Could not link your Perpl account.')
       const rows = Array.isArray(payload.accounts) ? payload.accounts : []
-      if (!rows.length) throw new Error('No Perpl trading account is linked to this wallet yet.')
+      if (!rows.length) throw new Error('No Perpl trading account is linked to this key yet.')
       setLinkedAddress(String(payload.address || ''))
       setPositions(Array.isArray(payload.positions) ? payload.positions : [])
       setFills(Array.isArray(payload.fills) ? payload.fills : [])
       setAccounts(rows)
       const selected = rows.find((item: PerplAccount) => item.forwarding)
       setAccountId(String((selected || rows[0]).id))
-      if (!selected) setError('Account linked. Turn on Order Forwarding in Perpl before placing an order.')
+      if (!selected) setError('Account linked. Note: turn on Order Forwarding in Perpl before placing orders.')
 
       if (rememberKeys) {
         try {
-          localStorage.setItem(SAVED_API_KEY, apiKey)
-          localStorage.setItem(SAVED_PRIVATE_KEY, privateKey)
-        } catch { /* Storage not accessible */ }
+          localStorage.setItem(SAVED_API_KEY, trimmedKey)
+          localStorage.setItem(SAVED_PRIVATE_KEY, trimmedSecret)
+        } catch { /* Storage restricted */ }
       }
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not link your Perpl account.') }
     finally { setBusy(null) }
@@ -126,18 +119,21 @@ export function PerplTrader({ market, intent, walletAddress, onClose, onNotice }
     try {
       if (!linkedAddress) throw new Error('Link your Perpl account first.')
       const submittedAt = Date.now()
+      const trimmedKey = apiKey.trim()
+      const trimmedSecret = privateKey.trim()
       const response = await fetch('/api/perpl/order', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
-        apiKey, privateKey, address: linkedAddress, marketId: market.id, accountId, direction, action, positionId: Number(positionId), notional: Number(notional), leverage: Number(leverage),
+        apiKey: trimmedKey, privateKey: trimmedSecret, address: linkedAddress, marketId: market.id, accountId, direction, action, positionId: Number(positionId), notional: Number(notional), leverage: Number(leverage),
       }) })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Perpl could not place the order.')
       const acceptedResult = payload as OrderResult
       setResult(acceptedResult)
-      onNotice(payload.status ? `Perpl order status: ${statusNames[payload.status.code] || 'Updated'}.` : 'Order sent to Perpl. Checking status and receipt.')
+      onNotice(payload.status ? `Perpl order status: ${statusNames[payload.status.code] || 'Updated'}.` : 'Order placed on Perpl. Checking confirmation…')
+
       void (async () => {
         for (let attempt = 0; attempt < 15; attempt++) {
           await new Promise((resolve) => setTimeout(resolve, attempt ? 1200 : 400))
-          const statusResponse = await fetch('/api/perpl/order-status', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ apiKey, privateKey, requestId: acceptedResult.requestId, accountId, marketId: market.id, sizeDecimals: market.sizeDecimals || 0, priceDecimals: market.priceDecimals || 0 }) }).catch(() => null)
+          const statusResponse = await fetch('/api/perpl/order-status', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ apiKey: trimmedKey, privateKey: trimmedSecret, requestId: acceptedResult.requestId, accountId, marketId: market.id, sizeDecimals: market.sizeDecimals || 0, priceDecimals: market.priceDecimals || 0 }) }).catch(() => null)
           if (!statusResponse?.ok) continue
           const statusPayload = await statusResponse.json().catch(() => ({}))
           if (!statusPayload.status) continue
@@ -146,11 +142,12 @@ export function PerplTrader({ market, intent, walletAddress, onClose, onNotice }
           if ([2, 3, 4, 5, 6, 7, 10].includes(status.code)) break
         }
       })()
+
       void (async () => {
         let recentFills: PerplFill[] = []
         for (let attempt = 0; attempt < 5 && !recentFills.some((fill) => fill.transaction); attempt++) {
           if (attempt) await new Promise((resolve) => setTimeout(resolve, 900))
-          const accountResponse = await fetch('/api/perpl/account', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ apiKey, privateKey }) }).catch(() => null)
+          const accountResponse = await fetch('/api/perpl/account', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ apiKey: trimmedKey, privateKey: trimmedSecret }) }).catch(() => null)
           if (!accountResponse?.ok) continue
           const accountPayload = await accountResponse.json().catch(() => ({}))
           const expectedType = action === 'close' ? direction === 'long' ? 3 : 4 : direction === 'long' ? 1 : 2
@@ -170,133 +167,258 @@ export function PerplTrader({ market, intent, walletAddress, onClose, onNotice }
     finally { setBusy(null) }
   }
 
+  const isConnected = accounts.length > 0
+
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
     <section className="modal perpl-trader-modal" role="dialog" aria-modal="true" aria-labelledby="trade-title">
       <button className="close-button" aria-label="Close order panel" disabled={busy !== null} onClick={onClose}><X size={19} /></button>
-      <span className="modal-kicker">PERPL · MONAD TESTNET</span>
-      <h2 id="trade-title">{mode === 'direct' ? `Trade ${market.symbol} on Perpl.` : `Review a ${market.symbol} order.`}</h2>
-      <p>{mode === 'direct' ? 'Plan your position with live market sizing, then open directly on Perpl DEX.' : 'Submit an automated order using your trade-enabled Perpl API key.'}</p>
+      <span className="modal-kicker">PERPL TRADING ENGINE · MONAD TESTNET</span>
+      <h2 id="trade-title">{isConnected ? `Trade ${market.symbol} Perpetual` : 'Connect Perpl Account'}</h2>
+      <p>
+        {isConnected
+          ? `Execute real-time perpetual orders directly inside GentrY on Monad Testnet.`
+          : `GentrY executes orders directly on Perpl’s high-speed orderbook on Monad. Connect your trading key once to trade all markets in-app.`}
+      </p>
 
-      <div className="perpl-mode-tabs" role="tablist">
-        <button type="button" className={mode === 'direct' ? 'active' : ''} onClick={() => setMode('direct')}>
-          <Zap size={13} style={{ display: 'inline', marginRight: 5 }} /> Quick Trade (No Keys)
-        </button>
-        <button type="button" className={mode === 'api' ? 'active' : ''} onClick={() => setMode('api')}>
-          <KeyRound size={13} style={{ display: 'inline', marginRight: 5 }} /> In-Terminal API
-        </button>
-      </div>
+      {/* When Connected: Show Connected Account Banner */}
+      {isConnected && <div className="perpl-connected-badge">
+        <span><KeyRound size={14} /> Connected: Account #{accountId} {linkedAddress ? `(${linkedAddress.slice(0, 6)}…${linkedAddress.slice(-4)})` : ''}</span>
+        <button type="button" onClick={forgetCredentials}>Disconnect key</button>
+      </div>}
 
-      {mode === 'direct' && <div className="perpl-direct-flow">
-        <div className="trade-direction" style={{ marginBottom: 14 }}>
-          <button type="button" className={direction === 'long' ? 'active long' : ''} onClick={() => setDirection('long')}>Buy / Long</button>
-          <button type="button" className={direction === 'short' ? 'active short' : ''} onClick={() => setDirection('short')}>Sell / Short</button>
+      {/* Screen 1: One-Time Connection Form if Not Connected */}
+      {!isConnected && <>
+        <div className="perpl-connect-guide">
+          <p>Quick 1-time setup:</p>
+          <ol>
+            <li>Open your <a href="https://testnet.perpl.xyz/apikeys" target="_blank" rel="noreferrer">Perpl Account Settings <ArrowUpRight size={11} style={{ display: 'inline' }} /></a> in a new tab.</li>
+            <li>Click <strong>Create API Key</strong> and ensure <strong>Order Forwarding</strong> is turned on.</li>
+            <li>Paste your API key and signing key below. GentrY saves it locally on your browser so you never have to re-enter it.</li>
+          </ol>
         </div>
 
-        <div className="trade-fields">
-          <label htmlFor="direct-notional">
-            Order Value (USD)
+        <form className="perpl-link-form" onSubmit={(event) => void loadAccount(event)}>
+          <label htmlFor="perpl-api-key">Perpl API key</label>
+          <input
+            id="perpl-api-key"
+            autoComplete="off"
+            value={apiKey}
+            onChange={(event) => setApiKey(event.target.value)}
+            placeholder="Paste your Perpl API key"
+            required
+          />
+
+          <label htmlFor="perpl-signing-key">Perpl signing key (private key)</label>
+          <input
+            id="perpl-signing-key"
+            type="password"
+            autoComplete="new-password"
+            value={privateKey}
+            onChange={(event) => setPrivateKey(event.target.value)}
+            placeholder="Paste your 32-byte signing key"
+            required
+          />
+
+          <label className="perpl-remember-row">
             <input
-              id="direct-notional"
+              type="checkbox"
+              checked={rememberKeys}
+              onChange={(e) => setRememberKeys(e.target.checked)}
+            />
+            <span>Remember key on this browser (recommended)</span>
+          </label>
+
+          <div className="perpl-privacy">
+            <LockKeyhole size={15} />
+            <span>Used only to sign your orders. GentrY never exposes your private key. Stays in memory and local storage.</span>
+          </div>
+
+          <button className="primary-button wide" disabled={busy !== null || !apiKey.trim() || !privateKey.trim()}>
+            {busy === 'account' ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
+            {busy === 'account' ? 'Connecting to Perpl…' : 'Connect & Start Trading'}
+          </button>
+        </form>
+      </>}
+
+      {/* Screen 2: Live In-App Trading Terminal */}
+      {isConnected && !result && <form className="perpl-order-form" onSubmit={(event) => void placeOrder(event)}>
+        {accounts.length > 1 && <>
+          <label htmlFor="perpl-account">Perpl Trading Account</label>
+          <select id="perpl-account" value={accountId} onChange={(event) => setAccountId(event.target.value)}>
+            {accounts.map((account) => (
+              <option key={account.id} value={account.id}>
+                Account {account.id}{account.forwarding ? '' : ' · forwarding off'}
+              </option>
+            ))}
+          </select>
+        </>}
+
+        {!accounts.find((account) => String(account.id) === accountId)?.forwarding && (
+          <div className="perpl-privacy">Order Forwarding is off in Perpl. Turn it on in Perpl settings to execute trades.</div>
+        )}
+
+        <div className="trade-direction">
+          <button type="button" className={action === 'open' ? 'active long' : ''} onClick={() => setAction('open')}>Open position</button>
+          <button type="button" className={action === 'close' ? 'active short' : ''} onClick={() => setAction('close')}>Close position</button>
+        </div>
+
+        {action === 'close' && <>
+          {positions.filter((position) => position.accountId === Number(accountId) && position.marketId === market.id).length > 0 ? <>
+            <label htmlFor="perpl-position">Select Open {market.symbol} Position</label>
+            <select
+              id="perpl-position"
+              value={positionId}
+              onChange={(event) => {
+                const value = event.target.value
+                setPositionId(value)
+                const position = positions.find((item) => String(item.id) === value)
+                if (position) {
+                  setDirection(position.side)
+                  setNotional(position.notional.toFixed(2))
+                  setLeverage(String(Math.max(1, Math.floor(position.leverage))))
+                }
+              }}
+            >
+              <option value="">Choose open position…</option>
+              {positions.filter((position) => position.accountId === Number(accountId) && position.marketId === market.id).map((position) => (
+                <option key={position.id} value={position.id}>
+                  {position.side === 'long' ? 'Long' : 'Short'} · {position.size.toFixed(market.sizeDecimals ?? 4)} {market.symbol} · {money(position.notional)}
+                </option>
+              ))}
+            </select>
+          </> : <div className="perpl-privacy">No open {market.symbol} position was found for this account.</div>}
+        </>}
+
+        {action === 'open' && (
+          <div className="trade-direction">
+            <button type="button" className={direction === 'long' ? 'active long' : ''} onClick={() => setDirection('long')}>Buy / Long</button>
+            <button type="button" className={direction === 'short' ? 'active short' : ''} onClick={() => setDirection('short')}>Sell / Short</button>
+          </div>
+        )}
+
+        <div className="trade-fields">
+          <label htmlFor="trade-notional">
+            {action === 'close' ? 'Close Value (USD)' : 'Order Value (USD)'}
+            <input
+              id="trade-notional"
               type="number"
-              min="1"
+              min="0.01"
+              max={action === 'close' ? selectedPosition?.notional : undefined}
               step="any"
               inputMode="decimal"
               value={notional}
-              onChange={(e) => setNotional(e.target.value)}
+              onChange={(event) => setNotional(event.target.value)}
               placeholder="e.g. 100"
+              required
             />
-            <div className="trade-preset-pills">
+            {action === 'open' && <div className="trade-preset-pills">
               {['25', '50', '100', '250', '500'].map((val) => (
                 <button type="button" key={val} onClick={() => setNotional(val)}>${val}</button>
               ))}
-            </div>
+            </div>}
           </label>
-          <label htmlFor="direct-leverage">
+          <label htmlFor="trade-leverage">
             Leverage
-            <select id="direct-leverage" value={leverage} onChange={(e) => setLeverage(e.target.value)}>
-              {[1, 2, 3, 5, 10, 20, 25, Math.min(50, maxLeverage)].filter((v, i, a) => v <= maxLeverage && a.indexOf(v) === i).map((val) => (
-                <option key={val} value={val}>{val}×</option>
+            <select id="trade-leverage" value={leverage} onChange={(event) => setLeverage(event.target.value)}>
+              {Array.from({ length: maxLeverage }, (_, i) => i + 1).filter((v) => v <= 10 || v % 5 === 0).map((value) => (
+                <option key={value} value={value}>{value}×</option>
               ))}
             </select>
           </label>
         </div>
 
-        <div className="order-review" style={{ marginTop: 14 }}>
+        <div className="order-review">
           <div><span>Market</span><strong>{market.symbol} Perpetual</strong></div>
           <div><span>Mark price</span><strong>{money(market.mark)}</strong></div>
           <div><span>Approx. size</span><strong>{estimate ? `${estimate.size.toFixed(market.sizeDecimals ?? 4)} ${market.symbol}` : '—'}</strong></div>
           <div><span>Required collateral</span><strong>{estimate ? money(estimate.collateral) : '—'}</strong></div>
-          <div><span>Est. liquidation buffer</span><strong>{estimate ? `~${estimate.liqMovePct.toFixed(1)}% move (${money(estimate.estLiquidation)})` : '—'}</strong></div>
+          <div><span>Est. liquidation</span><strong>{estimate ? `~${estimate.liqMovePct.toFixed(1)}% move (${money(estimate.estLiquidation)})` : '—'}</strong></div>
           <div><span>Max slippage limit</span><strong>{market.maxSlippageBps ?? 50} bps</strong></div>
         </div>
 
-        <a
-          className="perpl-launch-button"
-          href={`https://testnet.perpl.xyz/trade/${market.symbol}`}
-          target="_blank"
-          rel="noreferrer"
-        >
-          Open & Trade {market.symbol} on Perpl DEX <ArrowUpRight size={17} />
-        </a>
-
         <button
-          type="button"
-          className="secondary-button wide"
-          style={{ marginTop: 10 }}
-          onClick={() => void copyPlan()}
+          className="primary-button wide"
+          disabled={busy !== null || !estimate || !accountId || !accounts.find((account) => String(account.id) === accountId)?.forwarding || (action === 'close' && !positionId)}
         >
-          {copiedPlan ? <><Check size={14} /> Plan copied to clipboard!</> : <><Copy size={14} /> Copy trade parameters</>}
+          {busy === 'order' ? <LoaderCircle className="spin" size={16} /> : null}
+          {busy === 'order'
+            ? 'Placing order on Perpl…'
+            : action === 'close'
+            ? `Close ${direction} position`
+            : `Place ${direction === 'long' ? 'Buy / Long' : 'Sell / Short'} Order`}
         </button>
+      </form>}
 
-        <p className="perpl-network-note">
-          Opens Perpl with your wallet in 1 click. Zero API keys, signing keys, or permissions required.
-        </p>
+      {/* Screen 3: Order Fill Result & Onchain Proof */}
+      {result && <div className="order-result">
+        <div className="success-icon"><Check size={22} /></div>
+        <h3>{result.status ? statusNames[result.status.code] || 'Order updated' : 'Order submitted'}</h3>
+        <p>{result.status ? `${result.status.filledSize} ${result.market} filled at ${money(result.status.averageFillPrice)}.` : 'Perpl received your order. Checking confirmation on Monad.'}</p>
+        <div className="order-review">
+          <div><span>Request number</span><strong>#{result.requestId}</strong></div>
+          <div><span>Order value</span><strong>{money(result.notional)}</strong></div>
+          <div><span>Estimated fee</span><strong>{money(result.estimatedTakerFee)}</strong></div>
+          <div><span>Leverage</span><strong>{result.leverage}×</strong></div>
+        </div>
+        {result.onchainTransactions?.length ? (
+          <div className="perpl-tx-proof">
+            <strong>Confirmed on Monad Testnet</strong>
+            {result.onchainTransactions.map((transaction) => (
+              <a key={transaction.hash} href={`https://testnet.monadscan.com/tx/${transaction.hash}`} target="_blank" rel="noreferrer">
+                View transaction · block {Number(transaction.blockNumber).toLocaleString()} <ArrowUpRight size={14} />
+              </a>
+            ))}
+          </div>
+        ) : null}
+        <button className="primary-button wide" onClick={() => setResult(null)}>Trade again</button>
+        <button className="secondary-button wide" onClick={onClose}>Done</button>
       </div>}
 
-      {mode === 'api' && <>
-        {!walletAddress && <p className="perpl-network-note">Link your Perpl account with its trade-enabled key. Monad wallet connection is optional for Perpl orders.</p>}
+      {/* Open Positions List */}
+      {isConnected && positions.length > 0 && !result && (
+        <div className="perpl-recent-fills" style={{ marginTop: 14 }}>
+          <strong>Your Open Positions</strong>
+          {positions.map((pos) => (
+            <div className="perpl-recent-fill" key={pos.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>{pos.symbol} · {pos.side.toUpperCase()} · {pos.size.toFixed(4)} @ {money(pos.entryPrice)}</span>
+              <button
+                type="button"
+                className="text-button"
+                style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', cursor: 'pointer' }}
+                onClick={() => {
+                  setAction('close')
+                  setPositionId(String(pos.id))
+                  setDirection(pos.side)
+                  setNotional(pos.notional.toFixed(2))
+                  setLeverage(String(Math.max(1, Math.floor(pos.leverage))))
+                }}
+              >
+                Close
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
-        {!accounts.length && <form className="perpl-link-form" onSubmit={(event) => void loadAccount(event)}>
-          <label htmlFor="perpl-api-key">Perpl API key</label>
-          <input id="perpl-api-key" autoComplete="off" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder="Paste your Perpl API key" required />
-          <label htmlFor="perpl-signing-key">Perpl signing key</label>
-          <input id="perpl-signing-key" type="password" autoComplete="new-password" value={privateKey} onChange={(event) => setPrivateKey(event.target.value)} placeholder="Paste your Perpl signing key" required />
+      {/* Recent Fills List */}
+      {fills.length > 0 && !result && (
+        <div className="perpl-recent-fills">
+          <strong>Recent Fills</strong>
+          {fills.slice(0, 3).map((fill) => (
+            <div className="perpl-recent-fill" key={`${fill.orderId}-${fill.timestamp}`}>
+              <span>{fill.symbol} · {fill.type === 1 || fill.type === 3 ? 'Long' : 'Short'} · {fill.size} @ {money(fill.price)}</span>
+              {fill.transaction ? (
+                <a href={`https://testnet.monadscan.com/tx/${fill.transaction.hash}`} target="_blank" rel="noreferrer">
+                  Confirmed on Monad <ArrowUpRight size={13} />
+                </a>
+              ) : <span>Verifying on Monad…</span>}
+            </div>
+          ))}
+        </div>
+      )}
 
-          <label className="perpl-remember-row">
-            <input type="checkbox" checked={rememberKeys} onChange={(e) => setRememberKeys(e.target.checked)} />
-            <span>Remember API key on this browser</span>
-          </label>
-
-          <div className="perpl-privacy"><LockKeyhole size={15} /><span>Used only to sign this request. GentrY does not send your key to third parties. Use a trade-enabled key from Perpl.</span></div>
-          <button className="secondary-button wide" disabled={busy !== null || !apiKey || !privateKey}>{busy === 'account' ? <LoaderCircle className="spin" size={16} /> : null}Link Perpl account</button>
-          <a className="perpl-help-link" href="https://testnet.perpl.xyz/apikeys" target="_blank" rel="noreferrer">Open Perpl account settings <ArrowUpRight size={13} /></a>
-        </form>}
-
-        {accounts.length > 0 && !result && <form className="perpl-order-form" onSubmit={(event) => void placeOrder(event)}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <p className="perpl-network-note" style={{ margin: 0 }}>Perpl account · {linkedAddress ? `${linkedAddress.slice(0, 6)}…${linkedAddress.slice(-4)}` : 'linked'}</p>
-            <button type="button" className="text-button" style={{ fontSize: 11, color: 'var(--muted)', cursor: 'pointer' }} onClick={forgetCredentials}>Disconnect key</button>
-          </div>
-
-          <label htmlFor="perpl-account">Trading account</label>
-          <select id="perpl-account" value={accountId} onChange={(event) => setAccountId(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>Account {account.id}{account.forwarding ? '' : ' · forwarding off'}</option>)}</select>
-          {!accounts.find((account) => String(account.id) === accountId)?.forwarding && <div className="perpl-privacy">Turn on Order Forwarding in Perpl account settings before continuing.</div>}
-          <div className="trade-direction"><button type="button" className={action === 'open' ? 'active long' : ''} onClick={() => setAction('open')}>Open position</button><button type="button" className={action === 'close' ? 'active short' : ''} onClick={() => setAction('close')}>Close position</button></div>
-          {action === 'close' && <>{positions.filter((position) => position.accountId === Number(accountId) && position.marketId === market.id).length > 0 ? <><label htmlFor="perpl-position">Open {market.symbol} position</label><select id="perpl-position" value={positionId} onChange={(event) => { const value = event.target.value; setPositionId(value); const position = positions.find((item) => String(item.id) === value); if (position) { setDirection(position.side); setNotional(position.notional.toFixed(2)); setLeverage(String(Math.max(1, Math.floor(position.leverage)))) } }}>{positions.filter((position) => position.accountId === Number(accountId) && position.marketId === market.id).map((position) => <option key={position.id} value={position.id}>{position.side === 'long' ? 'Long' : 'Short'} · {position.size.toFixed(market.sizeDecimals ?? 4)} {market.symbol} · about {money(position.notional)}</option>)}</select><p className="perpl-network-note">Closing sells down this position. The amount can be partial, up to its current value.</p></> : <div className="perpl-privacy">No open {market.symbol} position was found for this account.</div>}</>}
-          {action === 'open' && <div className="trade-direction"><button type="button" className={direction === 'long' ? 'active long' : ''} onClick={() => setDirection('long')}>Buy / Long</button><button type="button" className={direction === 'short' ? 'active short' : ''} onClick={() => setDirection('short')}>Sell / Short</button></div>}
-          <div className="trade-fields"><label htmlFor="trade-notional">{action === 'close' ? 'Close value (USD)' : 'Order value (USD)'}<input id="trade-notional" type="number" min="0.01" max={action === 'close' ? selectedPosition?.notional : undefined} step="any" inputMode="decimal" value={notional} onChange={(event) => setNotional(event.target.value)} placeholder="Enter amount" required /></label><label htmlFor="trade-leverage">Leverage<select id="trade-leverage" value={leverage} onChange={(event) => setLeverage(event.target.value)}>{Array.from({ length: maxLeverage }, (_, i) => i + 1).map((value) => <option key={value} value={value}>{value}×</option>)}</select></label></div>
-          <div className="order-review"><div><span>Market</span><strong>{market.symbol} perpetual</strong></div><div><span>Mark price</span><strong>{money(market.mark)}</strong></div><div><span>Approx. size</span><strong>{estimate ? `${estimate.size.toFixed(market.sizeDecimals ?? 4)} ${market.symbol}` : '—'}</strong></div><div><span>Estimated collateral</span><strong>{estimate ? money(estimate.collateral) : '—'}</strong></div><div><span>Market slippage limit</span><strong>{market.maxSlippageBps ?? 0} bps</strong></div></div>
-          <p className="trade-risk-note">Perpetuals can lose your collateral. The final fill price may differ from the mark price. Review the amount and direction before continuing.</p>
-          <button className="primary-button wide" disabled={busy !== null || !estimate || !accountId || !accounts.find((account) => String(account.id) === accountId)?.forwarding || (action === 'close' && !positionId)}>{busy === 'order' ? <LoaderCircle className="spin" size={16} /> : null}{action === 'close' ? `Close ${direction} position` : `Place ${direction === 'long' ? 'buy / long' : 'sell / short'} order`}</button>
-        </form>}
-
-        {result && <div className="order-result"><div className="success-icon"><Check size={22} /></div><h3>{result.status ? statusNames[result.status.code] || 'Order updated' : 'Order submitted'}</h3><p>{result.status ? `${result.status.filledSize} ${result.market} filled at ${money(result.status.averageFillPrice)}.` : 'Perpl received your order. Its status will appear here.'}</p><div className="order-review"><div><span>Request number</span><strong>{result.requestId}</strong></div><div><span>Order value</span><strong>{money(result.notional)}</strong></div><div><span>Estimated fee</span><strong>{money(result.estimatedTakerFee)}</strong></div></div>{result.onchainTransactions?.length ? <div className="perpl-tx-proof"><strong>Confirmed on Monad</strong>{result.onchainTransactions.map((transaction) => <a key={transaction.hash} href={`https://testnet.monadscan.com/tx/${transaction.hash}`} target="_blank" rel="noreferrer">View transaction · block {Number(transaction.blockNumber).toLocaleString()} <ArrowUpRight size={14} /></a>)}</div> : null}<button className="secondary-button wide" onClick={onClose}>Done</button></div>}
-
-        {fills.length > 0 && !result && <div className="perpl-recent-fills"><strong>Recent fills</strong>{fills.slice(0, 4).map((fill) => <div className="perpl-recent-fill" key={`${fill.orderId}-${fill.timestamp}`}><span>{fill.symbol} · {fill.type === 1 || fill.type === 3 ? 'Long' : 'Short'} · {fill.size} @ {money(fill.price)}</span>{fill.transaction ? <a href={`https://testnet.monadscan.com/tx/${fill.transaction.hash}`} target="_blank" rel="noreferrer">Confirmed on Monad <ArrowUpRight size={13} /></a> : <span>Verifying transaction…</span>}</div>)}</div>}
-
-        {error && <div className="perpl-inline-error" role="alert">{error}{error.includes('Order Forwarding') && <> <a href="https://testnet.perpl.xyz" target="_blank" rel="noreferrer">Open Perpl <ArrowUpRight size={12} /></a></>}</div>}
-        <p className="perpl-network-note">Monad Testnet · {result ? 'Order details from Perpl.' : 'Your confirmation sends the order to Perpl.'}</p>
-      </>}
+      {error && <div className="perpl-inline-error" role="alert">{error}</div>}
+      <p className="perpl-network-note">Monad Testnet · Trades are executed directly via Perpl's offchain orderbook with onchain settlement.</p>
     </section>
   </div>
 }
