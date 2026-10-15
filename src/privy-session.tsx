@@ -54,6 +54,7 @@ function PrivyWalletSession({ children }: { children: ReactNode }) {
   const identity = user?.email?.address || user?.phone?.number || user?.google?.email || user?.twitter?.username || undefined
   const signPaymentAuthorization = useCallback(async (data: TypedDataRequest) => {
     if (activeWallet?.walletClientType !== 'privy') throw new Error('Embedded wallet is not ready to sign.')
+    const { uiOptions, ...typedData } = data
     const rawValue = data.message.value
     let amount = 'the listed amount'
     if ((typeof rawValue === 'string' && /^\d+$/.test(rawValue)) || typeof rawValue === 'bigint' || (typeof rawValue === 'number' && Number.isSafeInteger(rawValue) && rawValue >= 0)) {
@@ -62,12 +63,12 @@ function PrivyWalletSession({ children }: { children: ReactNode }) {
       const fraction = (units % 1_000_000n).toString().padStart(6, '0').replace(/0+$/, '')
       amount = fraction ? `${whole}.${fraction}` : String(whole)
     }
-    const serializableData = toPrivySerializable(data) as TypedDataRequest
+    const serializableData = toPrivySerializable(typedData) as TypedDataRequest
     const { signature } = await signEmbeddedTypedData(serializableData as any, {
       uiOptions: {
-        title: 'Confirm agent payment',
-        description: `Authorize ${amount} USDC for this request on Monad Testnet. The payment settles after approval; signing itself does not charge gas.`,
-        buttonText: 'Authorize payment',
+        title: uiOptions?.title || 'Confirm agent payment',
+        description: uiOptions?.description || `Authorize ${amount} USDC for this request on Monad Testnet. The payment settles after approval; signing itself does not charge gas.`,
+        buttonText: uiOptions?.buttonText || 'Authorize payment',
         isCancellable: true,
       },
     })

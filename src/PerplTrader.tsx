@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { ArrowUpRight, Check, KeyRound, LoaderCircle, LockKeyhole, X } from 'lucide-react'
+import { bytesToHex, hashTypedData, hexToBytes } from 'viem'
+import { useWalletSession } from './wallet'
 
 type Market = {
   id: number; symbol: string; mark: number; sizeDecimals?: number; priceDecimals?: number; maxLeverage?: number | null; maxSlippageBps?: number
@@ -19,17 +21,15 @@ type OrderResult = {
 const statusNames: Record<number, string> = { 1: 'Pending', 2: 'Open', 3: 'Partially filled', 4: 'Filled', 5: 'Canceled', 6: 'Expired', 7: 'Could not be placed', 8: 'Waiting for trigger', 9: 'Triggered', 10: 'Executed' }
 const money = (value: number) => `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
 
-const SAVED_API_KEY = 'gentry:perpl:apiKey'
-const SAVED_PRIVATE_KEY = 'gentry:perpl:privateKey'
+// Perpl signing credentials are intentionally held only in this running tab.
+// Privy retains the user's GentrY login. Perpl credentials are a separate
+// trading authorization and must not be persisted in browser storage.
+let activePerplSession: { apiKey: string; privateKey: string } | undefined
 
 export function PerplTrader({ market, intent, walletAddress: _walletAddress, onClose, onNotice }: Props) {
-  const [apiKey, setApiKey] = useState(() => {
-    try { return localStorage.getItem(SAVED_API_KEY) || '' } catch { return '' }
-  })
-  const [privateKey, setPrivateKey] = useState(() => {
-    try { return localStorage.getItem(SAVED_PRIVATE_KEY) || '' } catch { return '' }
-  })
-  const [rememberKeys, setRememberKeys] = useState(true)
+  const { address: connectedAddress, authenticated, provider, signTypedData, openWallet } = useWalletSession()
+  const [apiKey, setApiKey] = useState(() => activePerplSession?.apiKey || '')
+  const [privateKey, setPrivateKey] = useState(() => activePerplSession?.privateKey || '')
   const [accounts, setAccounts] = useState<PerplAccount[]>([])
   const [positions, setPositions] = useState<Position[]>([])
   const [fills, setFills] = useState<PerplFill[]>([])
@@ -59,7 +59,7 @@ export function PerplTrader({ market, intent, walletAddress: _walletAddress, onC
     return { size, collateral, liqMovePct, estLiquidation }
   }, [notional, leverage, market.mark, direction])
 
-  // Automatically authenticate if keys already saved on this device
+  // Reconnect only from the active tab session. Nothing is read from localStorage.
   useEffect(() => {
     if (apiKey.trim() && privateKey.trim() && !accounts.length) {
       void loadAccount()
@@ -73,19 +73,20 @@ export function PerplTrader({ market, intent, walletAddress: _walletAddress, onC
     setPositions([])
     setLinkedAddress('')
     setResult(null)
-    try {
-      localStorage.removeItem(SAVED_API_KEY)
-      localStorage.removeItem(SAVED_PRIVATE_KEY)
-    } catch { /* Storage not accessible */ }
+    activePerplSession = undefined
     setError('')
   }
 
   async function loadAccount(event?: FormEvent) {
     event?.preventDefault()
+    return linkAccount({ apiKey: apiKey.trim(), privateKey: privateKey.trim() })
+  }
+
+  async function linkAccount(credentials: { apiKey: string; privateKey: string }) {
     setBusy('account'); setError(''); setAccounts([]); setPositions([]); setFills([])
     try {
-      const trimmedKey = apiKey.trim()
-      const trimmedSecret = privateKey.trim()
+      const trimmedKey = credentials.apiKey.trim()
+      const trimmedSecret = credentials.privateKey.trim()
       const response = await fetch('/api/perpl/account', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -103,14 +104,72 @@ export function PerplTrader({ market, intent, walletAddress: _walletAddress, onC
       setAccountId(String((selected || rows[0]).id))
       if (!selected) setError('Account linked. Note: turn on Order Forwarding in Perpl before placing orders.')
 
-      if (rememberKeys) {
-        try {
-          localStorage.setItem(SAVED_API_KEY, trimmedKey)
-          localStorage.setItem(SAVED_PRIVATE_KEY, trimmedSecret)
-        } catch { /* Storage restricted */ }
-      }
+      activePerplSession = { apiKey: trimmedKey, privateKey: trimmedSecret }
     } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not link your Perpl account.') }
     finally { setBusy(null) }
+  }
+
+  function responseMessage(payload: unknown, fallback: string) {
+    if (!payload || typeof payload !== 'object') return fallback
+    const record = payload as Record<string, unknown>
+    return String(record.error || record.message || record.detail || fallback)
+  }
+
+  async function pairWithPrivyWallet() {
+    if (!authenticated || !connectedAddress) {
+      await openWallet()
+      return
+    }
+    if (!window.crypto?.subtle) {
+      setError('This browser cannot create the Perpl signing key. Open GentrY in a current Chrome, Edge, or Safari browser.')
+      return
+    }
+    setBusy('account'); setError(''); setAccounts([]); setPositions([]); setFills([])
+    try {
+      const pair = await window.crypto.subtle.generateKey({ name: 'Ed25519' } as AlgorithmIdentifier, true, ['sign', 'verify']) as CryptoKeyPair
+      const rawPublic = new Uint8Array(await window.crypto.subtle.exportKey('raw', pair.publicKey))
+      const privatePkcs8 = new Uint8Array(await window.crypto.subtle.exportKey('pkcs8', pair.privateKey))
+      const privateSeed = privatePkcs8.slice(-32)
+      if (rawPublic.length !== 32 || privateSeed.length !== 32) throw new Error('Could not create a valid Perpl signing key.')
+
+      const payloadResponse = await fetch('https://testnet.perpl.xyz/api/v1/api-key/payload', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          chain_id: 10143,
+          address: connectedAddress,
+          public_key: bytesToHex(rawPublic),
+          scope_mask: 3,
+          label: 'GentrY trading session',
+        }),
+      })
+      const payload = await payloadResponse.json().catch(() => null)
+      if (!payloadResponse.ok || !payload?.typed_data || !payload?.mac) throw new Error(responseMessage(payload, 'Perpl could not prepare the wallet authorization.'))
+      const typedData = payload.typed_data as { domain: Record<string, unknown>; types: Record<string, unknown>; primaryType: string; message: Record<string, unknown> }
+      const signature = signTypedData
+        ? await signTypedData({ ...typedData, uiOptions: { title: 'Authorize Perpl trading key', description: 'Authorize a scoped GentrY trading key for your Perpl account on Monad Testnet. This does not place an order or move funds.', buttonText: 'Authorize key' } })
+        : await provider?.request({ method: 'eth_signTypedData_v4', params: [connectedAddress, JSON.stringify(typedData)] })
+      if (!signature || typeof signature !== 'string') throw new Error('Wallet authorization was cancelled.')
+      const { EIP712Domain: _domainType, ...types } = typedData.types
+      const digest = hashTypedData({ domain: typedData.domain as any, types: types as any, primaryType: typedData.primaryType as any, message: typedData.message as any })
+      const digestBytes = new Uint8Array(Array.from(hexToBytes(digest)))
+      const popSignature = bytesToHex(new Uint8Array(await window.crypto.subtle.sign({ name: 'Ed25519' } as AlgorithmIdentifier, pair.privateKey, digestBytes)))
+      const enrollResponse = await fetch('https://testnet.perpl.xyz/api/v1/api-key/enroll', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ chain_id: 10143, address: connectedAddress, typed_data: typedData, mac: payload.mac, signature, pop_signature: popSignature }),
+      })
+      const enrolled = await enrollResponse.json().catch(() => null)
+      const token = enrolled?.api_key?.api_key || enrolled?.api_key
+      if (!enrollResponse.ok || typeof token !== 'string') throw new Error(responseMessage(enrolled, 'Perpl could not enroll the GentrY trading key.'))
+      const nextCredentials = { apiKey: token, privateKey: bytesToHex(privateSeed) }
+      setApiKey(nextCredentials.apiKey)
+      setPrivateKey(nextCredentials.privateKey)
+      await linkAccount(nextCredentials)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Perpl pairing did not complete.')
+      setBusy(null)
+    }
   }
 
   async function placeOrder(event: FormEvent) {
@@ -177,7 +236,7 @@ export function PerplTrader({ market, intent, walletAddress: _walletAddress, onC
       <p>
         {isConnected
           ? `Execute real-time perpetual orders directly inside GentrY on Monad Testnet.`
-          : `GentrY executes orders directly on Perpl’s high-speed orderbook on Monad. Connect your trading key once to trade all markets in-app.`}
+          : `GentrY submits orders to Perpl’s high-speed orderbook on Monad. Pair the API credentials for the Perpl smart-contract account you want to trade from.`}
       </p>
 
       {/* When Connected: Show Connected Account Banner */}
@@ -189,13 +248,19 @@ export function PerplTrader({ market, intent, walletAddress: _walletAddress, onC
       {/* Screen 1: One-Time Connection Form if Not Connected */}
       {!isConnected && <>
         <div className="perpl-connect-guide">
-          <p>Quick 1-time setup:</p>
+          <p>Set up your Perpl account:</p>
           <ol>
             <li>Open your <a href="https://testnet.perpl.xyz/apikeys" target="_blank" rel="noreferrer">Perpl Account Settings <ArrowUpRight size={11} style={{ display: 'inline' }} /></a> in a new tab.</li>
-            <li>Click <strong>Create API Key</strong> and ensure <strong>Order Forwarding</strong> is turned on.</li>
-            <li>Paste your API key and signing key below. GentrY saves it locally on your browser so you never have to re-enter it.</li>
+            <li>Create a Perpl smart-contract account, then turn on <strong>Order Forwarding</strong>.</li>
+            <li>Create an API key for GentrY’s origin and paste the key plus its signing key below.</li>
           </ol>
         </div>
+
+        <button className="primary-button wide" type="button" disabled={busy !== null} onClick={() => void pairWithPrivyWallet()}>
+          {busy === 'account' ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
+          {!authenticated ? 'Sign in to pair your Perpl account' : busy === 'account' ? 'Pairing with Perpl…' : 'Pair with my Privy wallet'}
+        </button>
+        <p className="perpl-divider"><span>or use an existing Perpl API key</span></p>
 
         <form className="perpl-link-form" onSubmit={(event) => void loadAccount(event)}>
           <label htmlFor="perpl-api-key">Perpl API key</label>
@@ -219,18 +284,9 @@ export function PerplTrader({ market, intent, walletAddress: _walletAddress, onC
             required
           />
 
-          <label className="perpl-remember-row">
-            <input
-              type="checkbox"
-              checked={rememberKeys}
-              onChange={(e) => setRememberKeys(e.target.checked)}
-            />
-            <span>Remember key on this browser (recommended)</span>
-          </label>
-
           <div className="perpl-privacy">
             <LockKeyhole size={15} />
-            <span>Used only to sign your orders. GentrY never exposes your private key. Stays in memory and local storage.</span>
+            <span>Used only to sign orders from this tab. Your GentrY login remains connected through Privy; the Perpl signing key is never written to browser storage.</span>
           </div>
 
           <button className="primary-button wide" disabled={busy !== null || !apiKey.trim() || !privateKey.trim()}>
