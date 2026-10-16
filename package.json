@@ -9,7 +9,9 @@
     "dev:server": "node --watch server/index.js",
     "build": "tsc -b && vite build",
     "start": "node server/index.js",
-    "deploy:vault": "node scripts/deploy-vault.mjs"
+    "deploy:vault": "node scripts/deploy-vault.mjs",
+    "fund:vault": "node scripts/fund-vault.mjs",
+    "open:vault-account": "node scripts/open-vault-account.mjs"
   },
   "dependencies": {
     "@privy-io/react-auth": "^3.49.0",
