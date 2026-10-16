@@ -15,7 +15,9 @@ const chain = { id: 10143, name: 'Monad Testnet', nativeCurrency: { name: 'MON',
 const transport = http('https://testnet-rpc.monad.xyz')
 const client = createPublicClient({ chain, transport })
 const wallet = createWalletClient({ account, chain, transport })
-const usdc = '0xA402B424f392EAA05DBc8779e4502A1F6A96fEF1'
+// Perpl's official Monad Testnet collateral token. Floorline's AUSD vault is
+// mainnet-specific; Kuru's test USDC is not accepted by Perpl's Testnet DEX.
+const usdc = '0xdf5b718d8fcc173335185a2a1513ee8151e3c027'
 const perpl = '0x1964C32f0bE608E7D29302AFF5E61268E72080cc'
 const gasPrice = await client.getGasPrice()
 const hash = await wallet.deployContract({
