@@ -550,7 +550,10 @@ app.post('/api/vault/order', async (req, res) => {
       publicClient.readContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'maxHedgeLots', args: [BigInt(marketId)] }),
     ])
     if (accountId === 0n) return res.status(503).json({ error: 'The managed Perpl account is not ready.' })
-    if (cap === 0n || lots > cap) return res.status(400).json({ error: 'This order exceeds the current managed risk cap.' })
+    if (cap === 0n || lots > cap) {
+      const maximumNotional = Number(cap) / (10 ** sizeDecimals) * mark
+      return res.status(400).json({ error: `This order exceeds the current managed cap of $${maximumNotional.toFixed(2)}.` })
+    }
     const wallet = managedVaultWallet()
     const hash = await wallet.writeContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'hedge', args: [BigInt(marketId), true, lots, markRaw] })
     const receipt = await publicClient.waitForTransactionReceipt({ hash })

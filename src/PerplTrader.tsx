@@ -8,6 +8,7 @@ type Props = { market: Market; intent?: TradeIntent; walletAddress: string; onCo
 type Execution = { market: string; notional: number; size: number; transaction: string; perplAccountId: string }
 
 const supportedMarkets = new Set([16, 32, 48, 64])
+const vaultLotCaps: Record<number, number> = { 16: 100, 32: 10, 48: 100, 64: 500 }
 const money = (value: number) => `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
 
 export function PerplTrader({ market, intent, walletAddress, onConnect, onClose, onNotice }: Props) {
@@ -29,12 +30,19 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
     if (!Number.isFinite(amount) || amount <= 0 || !(market.mark > 0)) return null
     return { size: amount / market.mark, amount }
   }, [notional, market.mark])
+  const maxNotional = useMemo(() => {
+    const cap = vaultLotCaps[market.id]
+    if (!cap || !(market.mark > 0)) return 0
+    return cap / (10 ** (market.sizeDecimals ?? 0)) * market.mark
+  }, [market.id, market.mark, market.sizeDecimals])
+  const presets = ['5', '10', '25', '50', '100'].filter((value) => Number(value) <= maxNotional)
 
   async function execute(event: FormEvent) {
     event.preventDefault()
     setError('')
     if (!walletAddress) { await onConnect(); return }
     if (!walletProvider) { setError('Your Privy wallet is still getting ready. Try again in a moment.'); return }
+    if (!estimate || estimate.amount > maxNotional) { setError(`Choose an order value up to ${money(maxNotional)} for this market.`); return }
     setBusy(true)
     try {
       const amount = Number(notional)
@@ -66,7 +74,7 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
         {ready === false && <div className="perpl-inline-error">Managed execution is reconnecting. Try again shortly.</div>}
         <form className="perpl-order-form" onSubmit={(event) => void execute(event)}>
           <div className="trade-direction"><button type="button" className="active long">Buy / Long</button></div>
-          <div className="trade-fields"><label htmlFor="trade-notional">Order value (AUSD)<input id="trade-notional" type="number" min="0.01" max="100" step="any" inputMode="decimal" value={notional} onChange={(event) => setNotional(event.target.value)} required /><div className="trade-preset-pills">{['5', '10', '25', '50', '100'].map((value) => <button type="button" key={value} onClick={() => setNotional(value)}>${value}</button>)}</div></label></div>
+          <div className="trade-fields"><label htmlFor="trade-notional">Order value (AUSD)<input id="trade-notional" type="number" min="0.01" max={maxNotional || undefined} step="any" inputMode="decimal" value={notional} onChange={(event) => setNotional(event.target.value)} required /><small className="trade-cap-note">Current vault cap: {maxNotional ? money(maxNotional) : '—'}</small><div className="trade-preset-pills">{presets.map((value) => <button type="button" key={value} onClick={() => setNotional(value)}>${value}</button>)}</div></label></div>
           <div className="order-review"><div><span>Market</span><strong>{market.symbol} Perpetual</strong></div><div><span>Mark price</span><strong>{money(market.mark)}</strong></div><div><span>Approx. size</span><strong>{estimate ? `${estimate.size.toFixed(market.sizeDecimals ?? 4)} ${market.symbol}` : '—'}</strong></div><div><span>Execution account</span><strong>GentrY vault</strong></div></div>
           <button className="primary-button wide" disabled={busy || !available || ready !== true || !estimate}>{busy ? <><LoaderCircle className="spin" size={16} />Submitting on Monad…</> : 'Approve & execute order'}</button>
         </form>
