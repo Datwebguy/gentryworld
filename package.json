@@ -8,7 +8,8 @@
     "dev:web": "vite --host 0.0.0.0",
     "dev:server": "node --watch server/index.js",
     "build": "tsc -b && vite build",
-    "start": "node server/index.js"
+    "start": "node server/index.js",
+    "deploy:vault": "node scripts/deploy-vault.mjs"
   },
   "dependencies": {
     "@privy-io/react-auth": "^3.49.0",
@@ -30,6 +31,7 @@
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.0",
+    "solc": "0.8.30",
     "typescript": "^5.7.2",
     "vite": "^6.0.1"
   },
