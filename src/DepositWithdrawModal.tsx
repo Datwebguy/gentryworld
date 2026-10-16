@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, type FormEvent } from 'react'
+import { useState, useEffect, useCallback, useMemo, type FormEvent } from 'react'
 import { ArrowDownLeft, ArrowUpRight, Check, LoaderCircle, ShieldCheck, X } from 'lucide-react'
-import { parseUnits, formatUnits, maxUint256, type Address } from 'viem'
+import { parseUnits, formatUnits, maxUint256, getAddress } from 'viem'
 import { useWalletSession } from './wallet'
 import { ausdAddress, managedVaultAddress, ausdAbi, vaultAbi, publicClient, connectWallet } from './chain'
 
@@ -32,36 +32,67 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
   const [vaultBalance, setVaultBalance] = useState<UserVaultBalance | null>(null)
   const [allowance, setAllowance] = useState<bigint>(0n)
   const [busy, setBusy] = useState(false)
-  const [approving, setApproving] = useState(false)
+  const [depositStep, setDepositStep] = useState<'' | 'approving' | 'depositing' | 'syncing'>('')
   const [claimingFaucet, setClaimingFaucet] = useState(false)
   const [error, setError] = useState('')
   const [successTx, setSuccessTx] = useState<{ hash: string; type: 'deposit' | 'withdraw'; amount: number } | null>(null)
 
+  // Safely checksummed addresses
+  const cleanWallet = useMemo(() => {
+    try {
+      return walletAddress ? getAddress(walletAddress.toLowerCase().trim()) : null
+    } catch {
+      return null
+    }
+  }, [walletAddress])
+
+  const cleanVault = useMemo(() => {
+    try {
+      return getAddress(managedVaultAddress)
+    } catch {
+      return managedVaultAddress
+    }
+  }, [])
+
+  const cleanAusd = useMemo(() => {
+    try {
+      return getAddress(ausdAddress)
+    } catch {
+      return ausdAddress
+    }
+  }, [])
+
   const walletAusd = Number(formatUnits(walletAusdRaw, 6))
 
   const fetchBalances = useCallback(async () => {
-    if (!walletAddress) return
+    if (!cleanWallet) return
     try {
-      // 1. Read on-chain AUSD balance and allowance
+      // 1. Read on-chain AUSD balance and allowance with checksummed addresses
       const [bal, allow] = await Promise.all([
         publicClient.readContract({
-          address: ausdAddress,
+          address: cleanAusd,
           abi: ausdAbi,
           functionName: 'balanceOf',
-          args: [walletAddress as Address]
-        }).catch(() => 0n),
+          args: [cleanWallet]
+        }).catch((err) => {
+          console.warn('Error reading AUSD balance:', err)
+          return 0n
+        }),
         publicClient.readContract({
-          address: ausdAddress,
+          address: cleanAusd,
           abi: ausdAbi,
           functionName: 'allowance',
-          args: [walletAddress as Address, managedVaultAddress]
-        }).catch(() => 0n)
+          args: [cleanWallet, cleanVault]
+        }).catch((err) => {
+          console.warn('Error reading allowance:', err)
+          return 0n
+        })
       ])
       setWalletAusdRaw(bal)
       setAllowance(allow)
 
       // 2. Fetch server-tracked vault balance
-      const res = await fetch(`/api/vault/user-balance?address=${encodeURIComponent(walletAddress)}`)
+      const res = await fetch(`/api/vault/user-balance?address=${encodeURIComponent(cleanWallet)}`)
       if (res.ok) {
         const data = await res.json()
         setVaultBalance(data)
@@ -69,27 +100,28 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
     } catch (err) {
       console.error('Failed to fetch deposit/withdraw balances:', err)
     }
-  }, [walletAddress])
+  }, [cleanWallet, cleanVault, cleanAusd])
 
   useEffect(() => {
     void fetchBalances()
-    const interval = setInterval(() => void fetchBalances(), 4000)
+    const interval = setInterval(() => void fetchBalances(), 3000)
     return () => clearInterval(interval)
   }, [fetchBalances])
 
   async function claimFaucet() {
-    if (!walletAddress) return
+    if (!cleanWallet) return
     setClaimingFaucet(true)
     setError('')
     try {
       const res = await fetch('/api/faucet/claim', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ address: walletAddress })
+        body: JSON.stringify({ address: cleanWallet })
       })
       if (res.ok) {
-        onNotice('Claimed 500 AUSD from faucet to your wallet!')
+        onNotice('Claimed 500 AUSD from faucet to your personal wallet!')
         await fetchBalances()
+        onSuccess?.()
       } else {
         const err = await res.json()
         setError(err.error || 'Could not claim test tokens.')
@@ -101,89 +133,92 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
     }
   }
 
-  async function handleApprove() {
-    if (!walletProvider || !walletAddress) return
-    setApproving(true)
-    setError('')
-    try {
-      const { wallet } = await connectWallet(walletProvider, walletAddress)
-      const hash = await wallet.writeContract({
-        address: ausdAddress,
-        abi: ausdAbi,
-        functionName: 'approve',
-        args: [managedVaultAddress, maxUint256],
-        account: walletAddress as Address
-      })
-      await publicClient.waitForTransactionReceipt({ hash })
-      setAllowance(maxUint256)
-      onNotice('AUSD approved for vault deposits.')
-    } catch (err) {
-      console.error('Approval error:', err)
-      setError(err instanceof Error ? err.message : 'Could not approve AUSD.')
-    } finally {
-      setApproving(false)
-    }
-  }
-
+  // 1-Click Automated Deposit flow: handles approval + deposit seamlessly
   async function handleDeposit(e: FormEvent) {
     e.preventDefault()
     setError('')
+    setSuccessTx(null)
     const num = Number(amount)
     if (!Number.isFinite(num) || num <= 0) {
       setError('Please enter a valid deposit amount.')
       return
     }
     if (num > walletAusd) {
-      setError(`Insufficient wallet balance. You only have $${walletAusd.toFixed(2)} AUSD.`)
+      setError(`Insufficient wallet balance. You have $${walletAusd.toFixed(2)} AUSD. Use "+ Claim 500 AUSD" below if you need testnet funds.`)
       return
     }
-    if (!walletProvider || !walletAddress) {
-      setError('Wallet provider is not ready.')
-      return
-    }
-
-    const units = parseUnits(num.toFixed(6), 6)
-    if (allowance < units) {
-      await handleApprove()
+    if (!walletProvider || !cleanWallet) {
+      setError('Wallet provider is not ready. Please reconnect your wallet.')
       return
     }
 
     setBusy(true)
     try {
-      const { wallet } = await connectWallet(walletProvider, walletAddress)
-      const hash = await wallet.writeContract({
-        address: managedVaultAddress,
+      const units = parseUnits(num.toFixed(6), 6)
+      const { wallet } = await connectWallet(walletProvider, cleanWallet)
+
+      // Step 1: If allowance is insufficient, request approval first and wait for receipt
+      if (allowance < units) {
+        setDepositStep('approving')
+        const approveHash = await wallet.writeContract({
+          address: cleanAusd,
+          abi: ausdAbi,
+          functionName: 'approve',
+          args: [cleanVault, maxUint256],
+          account: cleanWallet
+        })
+        const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveHash })
+        if (approveReceipt.status !== 'success') {
+          throw new Error('AUSD approval transaction failed on Monad Testnet.')
+        }
+        setAllowance(maxUint256)
+      }
+
+      // Step 2: Directly execute onchain vault.deposit
+      setDepositStep('depositing')
+      const depositHash = await wallet.writeContract({
+        address: cleanVault,
         abi: vaultAbi,
         functionName: 'deposit',
         args: [units],
-        account: walletAddress as Address
+        account: cleanWallet
       })
-      const receipt = await publicClient.waitForTransactionReceipt({ hash })
-      if (receipt.status !== 'success') throw new Error('Deposit transaction reverted on Monad Testnet.')
+      const depositReceipt = await publicClient.waitForTransactionReceipt({ hash: depositHash })
+      if (depositReceipt.status !== 'success') {
+        throw new Error('Deposit transaction reverted on Monad Testnet.')
+      }
 
-      // Notify backend to sync and credit ledger
+      // Step 3: Notify server to credit balance ledger and record onchain receipt
+      setDepositStep('syncing')
       await fetch('/api/vault/deposit', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ address: walletAddress, txHash: hash })
+        body: JSON.stringify({ address: cleanWallet, txHash: depositHash })
       })
 
-      setSuccessTx({ hash, type: 'deposit', amount: num })
+      setSuccessTx({ hash: depositHash, type: 'deposit', amount: num })
       setAmount('')
-      onNotice(`Deposited $${num.toFixed(2)} AUSD to your GentrY vault!`)
+      onNotice(`Deposited $${num.toFixed(2)} AUSD into your GentrY vault!`)
       await fetchBalances()
       onSuccess?.()
     } catch (err) {
       console.error('Deposit error:', err)
-      setError(err instanceof Error ? err.message : 'Failed to deposit AUSD.')
+      const msg = err instanceof Error ? err.message : 'Failed to deposit AUSD.'
+      if (/rejected|denied|cancel/i.test(msg)) {
+        setError('Transaction was cancelled in wallet.')
+      } else {
+        setError(msg)
+      }
     } finally {
       setBusy(false)
+      setDepositStep('')
     }
   }
 
   async function handleWithdraw(e: FormEvent) {
     e.preventDefault()
     setError('')
+    setSuccessTx(null)
     const num = Number(amount)
     if (!Number.isFinite(num) || num <= 0) {
       setError('Please enter a valid withdrawal amount.')
@@ -194,7 +229,7 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
       setError(`Withdrawal amount exceeds your available balance ($${avail.toFixed(2)}).`)
       return
     }
-    if (!walletProvider || !walletAddress) {
+    if (!walletProvider || !cleanWallet) {
       setError('Wallet provider is not ready.')
       return
     }
@@ -203,16 +238,16 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
     try {
       const nonce = crypto.randomUUID()
       const issuedAt = Date.now()
-      const message = `GentrY Testnet vault withdrawal\nWallet: ${walletAddress.toLowerCase()}\nAmount: ${num}\nIssued at: ${issuedAt}\nNonce: ${nonce}`
+      const message = `GentrY Testnet vault withdrawal\nWallet: ${cleanWallet.toLowerCase()}\nAmount: ${num}\nIssued at: ${issuedAt}\nNonce: ${nonce}`
       const signature = await walletProvider.request({
         method: 'personal_sign',
-        params: [message, walletAddress]
+        params: [message, cleanWallet]
       }) as string
 
       const res = await fetch('/api/vault/withdraw', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ address: walletAddress, amount: num, nonce, issuedAt, signature })
+        body: JSON.stringify({ address: cleanWallet, amount: num, nonce, issuedAt, signature })
       })
       const payload = await res.json()
       if (!res.ok) throw new Error(payload.error || 'Could not process withdrawal.')
@@ -224,7 +259,12 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
       onSuccess?.()
     } catch (err) {
       console.error('Withdraw error:', err)
-      setError(err instanceof Error ? err.message : 'Failed to withdraw AUSD.')
+      const msg = err instanceof Error ? err.message : 'Failed to withdraw AUSD.'
+      if (/rejected|denied|cancel/i.test(msg)) {
+        setError('Withdrawal was cancelled in wallet.')
+      } else {
+        setError(msg)
+      }
     } finally {
       setBusy(false)
     }
@@ -246,9 +286,9 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
   }
 
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy && !approving) onClose() }}>
+    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose() }}>
       <section className="modal perpl-trader-modal" role="dialog" aria-modal="true" style={{ maxWidth: 480 }}>
-        <button className="close-button" aria-label="Close" disabled={busy || approving} onClick={onClose}>
+        <button className="close-button" aria-label="Close" disabled={busy} onClick={onClose}>
           <X size={19} />
         </button>
 
@@ -334,17 +374,17 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
           }}>
             <Check size={18} style={{ color: '#10b981', flexShrink: 0, marginTop: 2 }} />
             <div style={{ flex: 1, fontSize: 13 }}>
-              <strong>
+              <strong style={{ color: '#10b981' }}>
                 {successTx.type === 'deposit' ? 'Deposit Confirmed' : 'Withdrawal Completed'}
               </strong>
               <p style={{ margin: '2px 0 6px', color: 'var(--muted)', fontSize: 12 }}>
-                ${successTx.amount.toFixed(2)} AUSD was settled on Monad Testnet.
+                ${successTx.amount.toFixed(2)} AUSD was settled on Monad Testnet. Your balances have been updated.
               </p>
               <a
                 href={`https://testnet.monadscan.com/tx/${successTx.hash}`}
                 target="_blank"
                 rel="noreferrer"
-                style={{ color: 'var(--accent)', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, textDecoration: 'none' }}
+                style={{ color: 'var(--accent)', fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 4, textDecoration: 'none', fontWeight: 600 }}
               >
                 View on MonadScan <ArrowUpRight size={12} />
               </a>
@@ -411,27 +451,26 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
 
             <div style={{ margin: '16px 0 8px', fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
               <ShieldCheck size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-              <span>Transfers real AUSD on Monad Testnet into your GentrY vault shares.</span>
+              <span>Transfers real AUSD on Monad Testnet into your GentrY vault shares in a single flow.</span>
             </div>
 
-            {needsApproval ? (
-              <button
-                type="button"
-                className="primary-button wide"
-                disabled={approving || busy}
-                onClick={() => void handleApprove()}
-              >
-                {approving ? <><LoaderCircle className="spin" size={16} /> Approving AUSD…</> : 'Step 1: Approve AUSD'}
-              </button>
-            ) : (
-              <button
-                type="submit"
-                className="primary-button wide"
-                disabled={busy || approving || !Number(amount)}
-              >
-                {busy ? <><LoaderCircle className="spin" size={16} /> Depositing on Monad…</> : 'Deposit AUSD to Vault'}
-              </button>
-            )}
+            <button
+              type="submit"
+              className="primary-button wide"
+              disabled={busy || !Number(amount) || Number(amount) <= 0}
+            >
+              {busy ? (
+                depositStep === 'approving' ? (
+                  <><LoaderCircle className="spin" size={16} /> Step 1/2: Confirming AUSD approval in wallet…</>
+                ) : depositStep === 'depositing' ? (
+                  <><LoaderCircle className="spin" size={16} /> Step 2/2: Confirming deposit in wallet…</>
+                ) : (
+                  <><LoaderCircle className="spin" size={16} /> Finalizing on Monad Testnet…</>
+                )
+              ) : (
+                needsApproval ? 'Approve & Deposit AUSD to Vault' : 'Deposit AUSD to Vault'
+              )}
+            </button>
           </form>
         )}
 

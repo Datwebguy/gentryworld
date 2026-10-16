@@ -193,7 +193,7 @@ export async function registerAgent(uri: string, provider?: Eip1193Provider | nu
 }
 
 export const ausdAddress = '0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC' as Address
-export const managedVaultAddress = '0x6b60d6c57a0a50939f8a3507c953a856796e6fb3' as Address
+export const managedVaultAddress = '0x6b60D6C57a0A50939F8A3507c953a856796E6fB3' as Address
 
 export const ausdAbi = parseAbi([
   'function balanceOf(address account) view returns (uint256)',

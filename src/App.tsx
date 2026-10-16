@@ -40,8 +40,6 @@ type ChatSession = { agent: Agent; endpoint: AgentEndpoint; market: Market }
 const explorer = 'https://testnet.monadscan.com'
 const identityRegistry = '0x8004A818BFB912233c491871b3d84c89A494BD9e'
 const agentSnapshotKey = 'gentry:monad-testnet:agents:v2'
-const ausdFaucetAddress = '0xd236c18D274E54FAccC3dd9DDA4b27965a73ee6C' as const
-const ausdFaucetAbi = [{ type: 'function', name: 'requestFunds', stateMutability: 'nonpayable', inputs: [{ name: 'recipient', type: 'address' }], outputs: [] }] as const
 
 type Route = 'home' | 'agents' | 'workspaces' | 'signals' | 'reputation' | 'publish' | 'profile' | 'research'
 type Market = { id: number; symbol: string; name: string; mark: number; previous: number; changePct: number; fundingRate: number; open: boolean; updatedAt?: number; sizeDecimals?: number; priceDecimals?: number; maxLeverage?: number | null; maxSlippageBps?: number }
@@ -596,27 +594,27 @@ export default function App() {
 
   async function claimTestAusd() {
     if (claimingAusd) return
-    if (!connectedAddress || !walletProvider) {
+    const targetAddr = walletAddress || connectedAddress
+    if (!targetAddr) {
       await onConnect()
       return
     }
     setClaimingAusd(true)
     try {
-      const { address, wallet } = await connectWallet(walletProvider, connectedAddress)
-      setWalletAddress(address)
-      const hash = await wallet.writeContract({
-        address: ausdFaucetAddress,
-        abi: ausdFaucetAbi,
-        functionName: 'requestFunds',
-        args: [address],
-        account: address,
+      const res = await fetch('/api/faucet/claim', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ address: targetAddr })
       })
-      setNotice(`Test AUSD is on its way to your Privy wallet. View the claim on Monadscan: ${hash}`)
-    } catch (cause) {
-      const message = cause instanceof Error ? cause.message.toLowerCase() : ''
-      setNotice(message.includes('user rejected') || message.includes('user denied')
-        ? 'AUSD claim was cancelled in your wallet.'
-        : 'The AUSD faucet is temporarily unavailable. Try again in a minute.')
+      if (res.ok) {
+        setNotice('Claimed 500 test AUSD directly to your personal wallet on Monad Testnet!')
+        void fetchWalletBalances()
+      } else {
+        const err = await res.json().catch(() => ({}))
+        setNotice(err.error || 'Could not claim test tokens.')
+      }
+    } catch {
+      setNotice('Faucet claim request failed.')
     } finally {
       setClaimingAusd(false)
     }
@@ -733,20 +731,14 @@ export default function App() {
         <div className="top-actions">
           {walletAddress && (
             <div className="wallet-balance-bar desktop-only">
-              <div className="wallet-balance-item" title="MON for gas fees">
+              <div className="wallet-balance-item" title="Gas balance on Monad Testnet">
                 <span className="wallet-balance-dot" />
-                <span>{walletBalances?.mon || '—'}</span>
+                <span>{walletBalances?.mon || '0 MON'}</span>
               </div>
-              <span style={{ color: 'var(--line)' }}>|</span>
-              <div className="wallet-balance-item" title="Personal Wallet AUSD on Monad Testnet">
-                <span style={{ color: 'var(--muted)', fontSize: 11 }}>Wallet:</span>
-                <span>{walletBalances?.ausd || '—'}</span>
-              </div>
-              <span style={{ color: 'var(--line)' }}>|</span>
-              <div className="wallet-balance-item" title="GentrY Vault Trading Balance">
-                <span style={{ color: 'var(--muted)', fontSize: 11 }}>Vault:</span>
-                <strong style={{ color: '#10b981' }}>${(vaultBalance?.totalBalance ?? 0).toFixed(2)}</strong>
-                <small style={{ color: 'var(--muted)', fontSize: 10, marginLeft: 3 }}>(${vaultBalance?.availableBalance ?? 0} avail)</small>
+              <span className="balance-sep">·</span>
+              <div className="wallet-balance-item" title="Available Trading Margin in GentrY Vault">
+                <span style={{ color: 'var(--muted)', fontSize: 11, fontWeight: 500 }}>Vault:</span>
+                <strong style={{ color: '#10b981', fontWeight: 700 }}>${(vaultBalance?.availableBalance ?? 0).toFixed(2)}</strong>
               </div>
               <button
                 type="button"
@@ -757,27 +749,106 @@ export default function App() {
               >
                 + Deposit
               </button>
-              <button
-                type="button"
-                className="faucet-claim-pill"
-                style={{ background: 'rgba(255, 255, 255, 0.05)', borderColor: 'var(--line)', color: 'var(--text)' }}
-                onClick={() => { setDepositModalTab('withdraw'); setDepositModalOpen(true) }}
-                title="Withdraw free AUSD and profits back to wallet"
-              >
-                Withdraw
-              </button>
-              <button
-                type="button"
-                className="faucet-claim-pill"
-                disabled={claimingHeaderFaucet}
-                onClick={() => void claimHeaderFaucet()}
-                title="Claim 500 free test AUSD to your wallet"
-              >
-                {claimingHeaderFaucet ? 'Claiming…' : '+ 500 Faucet'}
+            </div>
+          )}
+          <button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button>
+          <button className="wallet-button" aria-label={walletAddress ? `Account ${walletAddress}` : 'Sign in or connect wallet'} onClick={() => walletAddress ? setAccountMenu((open) => !open) : void onConnect()}>
+            <Wallet size={15} />
+            {walletAddress ? shortAddress(walletAddress) : 'Connect'}
+          </button>
+          {accountMenu && authenticated && (
+            <div className="wallet-account-menu">
+              <div className="wallet-menu-header">
+                <span>GentrY Account</span>
+                <strong>{identity || 'Wallet account'}</strong>
+                <div className="wallet-address-row">
+                  <small title={walletAddress}>{walletAddress}</small>
+                  <button className="wallet-copy-button" onClick={() => void copyWalletAddress()} aria-label="Copy wallet address">
+                    {addressCopied ? <Check size={14} /> : <Copy size={14} />}
+                    {addressCopied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Wallet Balances (Onchain) */}
+              <div className="wallet-menu-section">
+                <span className="wallet-menu-section-title">WALLET CASH (MONAD TESTNET)</span>
+                <div className="wallet-menu-balance-grid">
+                  <div className="wallet-menu-bal-card">
+                    <span>MON Gas</span>
+                    <strong>{walletBalances?.mon || '0 MON'}</strong>
+                  </div>
+                  <div className="wallet-menu-bal-card">
+                    <span>Personal AUSD</span>
+                    <strong>{walletBalances?.ausd || '$0.00 AUSD'}</strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Vault Trading Account */}
+              <div className="wallet-menu-section">
+                <span className="wallet-menu-section-title">GENTRY TRADING VAULT</span>
+                <div className="wallet-menu-balance-grid">
+                  <div className="wallet-menu-bal-card">
+                    <span>Total Balance</span>
+                    <strong>${(vaultBalance?.totalBalance ?? 0).toFixed(2)}</strong>
+                  </div>
+                  <div className="wallet-menu-bal-card">
+                    <span>Available Margin</span>
+                    <strong style={{ color: '#10b981' }}>${(vaultBalance?.availableBalance ?? 0).toFixed(2)}</strong>
+                  </div>
+                  <div className="wallet-menu-bal-card">
+                    <span>Locked Margin</span>
+                    <strong>${(vaultBalance?.lockedMargin ?? 0).toFixed(2)}</strong>
+                  </div>
+                  <div className="wallet-menu-bal-card">
+                    <span>Realized PnL</span>
+                    <strong style={{ color: (vaultBalance?.realizedPnl ?? 0) >= 0 ? '#10b981' : '#ef4444' }}>
+                      {(vaultBalance?.realizedPnl ?? 0) >= 0 ? '+' : ''}${(vaultBalance?.realizedPnl ?? 0).toFixed(2)}
+                    </strong>
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6, marginTop: 8 }}>
+                  <button
+                    type="button"
+                    className="wallet-action-btn primary"
+                    onClick={() => { setAccountMenu(false); setDepositModalTab('deposit'); setDepositModalOpen(true) }}
+                  >
+                    <ArrowDownLeft size={13} /> Deposit AUSD
+                  </button>
+                  <button
+                    type="button"
+                    className="wallet-action-btn secondary"
+                    onClick={() => { setAccountMenu(false); setDepositModalTab('withdraw'); setDepositModalOpen(true) }}
+                  >
+                    <ArrowUpRight size={13} /> Withdraw
+                  </button>
+                </div>
+              </div>
+
+              {/* Faucets */}
+              <div className="wallet-setup-card">
+                <span><i /> Test AUSD Faucet</span>
+                <p>Claim 500 test AUSD directly to this wallet.</p>
+                <button className="wallet-faucet-button" disabled={claimingAusd} onClick={() => void claimTestAusd()}>
+                  {claimingAusd ? <LoaderCircle className="spin" size={13} /> : <Coins size={13} />}
+                  {claimingAusd ? 'Claiming AUSD…' : 'Claim 500 test AUSD'}
+                </button>
+              </div>
+
+              <div className="wallet-setup-card">
+                <span><i /> Monad Testnet Gas</span>
+                <p>Need MON tokens for transaction network fees?</p>
+                <a href="https://faucet.monad.xyz/" target="_blank" rel="noreferrer">
+                  Open Monad faucet <ArrowUpRight size={13} />
+                </a>
+              </div>
+
+              <button className="wallet-signout-button" onClick={() => { setAccountMenu(false); setWalletAddress(''); void logout() }}>
+                Sign out
               </button>
             </div>
           )}
-          <button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button><button className="wallet-button" aria-label={walletAddress ? `Account ${walletAddress}` : 'Sign in or connect wallet'} onClick={() => walletAddress ? setAccountMenu((open) => !open) : void onConnect()}><Wallet size={15} />{walletAddress ? shortAddress(walletAddress) : 'Connect'}</button>{accountMenu && authenticated && <div className="wallet-account-menu"><span>GentrY account</span><strong>{identity || 'Wallet account'}</strong><div className="wallet-address-row"><small title={walletAddress}>{walletAddress}</small><button className="wallet-copy-button" onClick={() => void copyWalletAddress()} aria-label="Copy wallet address">{addressCopied ? <Check size={15} /> : <Copy size={15} />}{addressCopied ? 'Copied' : 'Copy'}</button></div><div className="wallet-setup-card"><span><i /> Monad Testnet</span><p>Need test MON for network fees?</p><a href="https://faucet.monad.xyz/" target="_blank" rel="noreferrer">Open Monad faucet <ArrowUpRight size={13} /></a></div><div className="wallet-setup-card"><span><i /> Test AUSD</span><p>Claim test AUSD directly to this Privy wallet.</p><button className="wallet-faucet-button" disabled={claimingAusd} onClick={() => void claimTestAusd()}>{claimingAusd ? <LoaderCircle className="spin" size={13} /> : <Coins size={13} />}{claimingAusd ? 'Claiming AUSD…' : 'Claim test AUSD'}</button></div><button className="wallet-signout-button" onClick={() => { setAccountMenu(false); setWalletAddress(''); void logout() }}>Sign out</button></div>}
         </div>
       </div>
 
@@ -848,71 +919,85 @@ export default function App() {
       </section>}
 
       {route === 'signals' && <section className="signals-section" id="signals">
-        <div className="workspace-heading"><div><span>LIVE MARKET SIGNALS</span><h2>See what is moving.</h2><p>Follow prices and market changes. Choose a market to get a closer look.</p></div><button className="refresh-button" disabled={marketsLoading} onClick={() => setMarketsRetry((value) => value + 1)}>{marketsLoading ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}Refresh</button></div>
-
-        {(vaultPositions.length > 0 || vaultHistory.length > 0 || (vaultBalance && vaultBalance.totalBalance > 0) || Boolean(walletAddress)) && (
-          <div className="vault-positions-panel">
-            {/* Vault Account Summary Bar */}
+        <div className="workspace-heading">
+          <div>
+            <span>LIVE MARKET SIGNALS</span>
+            <h2>See what is moving.</h2>
+            <p>Follow prices and market changes. Choose a market to trade or get a closer research look.</p>
+          </div>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
             {walletAddress && (
-              <div style={{
-                background: 'rgba(255, 255, 255, 0.02)',
-                border: '1px solid var(--line)',
-                borderRadius: 14,
-                padding: '14px 18px',
-                marginBottom: 16,
-                display: 'flex',
-                justifyContent: 'space-between',
-                alignItems: 'center',
-                flexWrap: 'wrap',
-                gap: 12
-              }}>
-                <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
-                  <div>
-                    <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Total Vault Balance</span>
-                    <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>
-                      ${(vaultBalance?.totalBalance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <small style={{ fontSize: 11, color: 'var(--muted)' }}>AUSD</small>
-                    </div>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Available Margin</span>
-                    <div style={{ fontSize: 16, fontWeight: 700, color: '#10b981', marginTop: 2 }}>
-                      ${(vaultBalance?.availableBalance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <small style={{ fontSize: 11, color: 'var(--muted)' }}>AUSD</small>
-                    </div>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Locked Margin</span>
-                    <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>
-                      ${(vaultBalance?.lockedMargin ?? 0).toFixed(2)}
-                    </div>
-                  </div>
-                  <div>
-                    <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Realized PnL</span>
-                    <div style={{ fontSize: 16, fontWeight: 700, color: (vaultBalance?.realizedPnl ?? 0) >= 0 ? '#10b981' : '#ef4444', marginTop: 2 }}>
-                      {(vaultBalance?.realizedPnl ?? 0) >= 0 ? '+' : ''}${(vaultBalance?.realizedPnl ?? 0).toFixed(2)}
-                    </div>
-                  </div>
-                </div>
+              <button
+                type="button"
+                className="primary-button"
+                style={{ padding: '7px 14px', fontSize: 13, background: '#10b981', color: '#fff', border: 'none' }}
+                onClick={() => { setDepositModalTab('deposit'); setDepositModalOpen(true) }}
+              >
+                <ArrowDownLeft size={14} style={{ marginRight: 6 }} /> Deposit AUSD
+              </button>
+            )}
+            <button className="refresh-button" disabled={marketsLoading} onClick={() => setMarketsRetry((value) => value + 1)}>
+              {marketsLoading ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}Refresh
+            </button>
+          </div>
+        </div>
 
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                  <button
-                    type="button"
-                    className="primary-button"
-                    style={{ padding: '7px 14px', fontSize: 13, background: '#10b981', color: '#fff', border: 'none' }}
-                    onClick={() => { setDepositModalTab('deposit'); setDepositModalOpen(true) }}
-                  >
-                    <ArrowDownLeft size={14} style={{ marginRight: 6 }} /> Deposit AUSD
-                  </button>
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    style={{ padding: '7px 14px', fontSize: 13 }}
-                    onClick={() => { setDepositModalTab('withdraw'); setDepositModalOpen(true) }}
-                  >
-                    <ArrowUpRight size={14} style={{ marginRight: 6 }} /> Withdraw
-                  </button>
+        {/* Vault Account Summary Bar (Visible when connected) */}
+        {walletAddress && (
+          <div style={{
+            background: 'rgba(255, 255, 255, 0.03)',
+            border: '1px solid var(--line)',
+            borderRadius: 14,
+            padding: '14px 18px',
+            marginBottom: 20,
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            flexWrap: 'wrap',
+            gap: 12
+          }}>
+            <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+              <div>
+                <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Total Vault Balance</span>
+                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>
+                  ${(vaultBalance?.totalBalance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <small style={{ fontSize: 11, color: 'var(--muted)' }}>AUSD</small>
                 </div>
               </div>
-            )}
+              <div>
+                <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Available Margin</span>
+                <div style={{ fontSize: 16, fontWeight: 700, color: '#10b981', marginTop: 2 }}>
+                  ${(vaultBalance?.availableBalance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <small style={{ fontSize: 11, color: 'var(--muted)' }}>AUSD</small>
+                </div>
+              </div>
+              <div>
+                <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Locked Margin</span>
+                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>
+                  ${(vaultBalance?.lockedMargin ?? 0).toFixed(2)}
+                </div>
+              </div>
+              <div>
+                <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Realized PnL</span>
+                <div style={{ fontSize: 16, fontWeight: 700, color: (vaultBalance?.realizedPnl ?? 0) >= 0 ? '#10b981' : '#ef4444', marginTop: 2 }}>
+                  {(vaultBalance?.realizedPnl ?? 0) >= 0 ? '+' : ''}${(vaultBalance?.realizedPnl ?? 0).toFixed(2)}
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button
+                type="button"
+                className="secondary-button"
+                style={{ padding: '7px 14px', fontSize: 13 }}
+                onClick={() => { setDepositModalTab('withdraw'); setDepositModalOpen(true) }}
+              >
+                <ArrowUpRight size={14} style={{ marginRight: 6 }} /> Withdraw
+              </button>
+            </div>
+          </div>
+        )}
+
+        {(vaultPositions.length > 0 || vaultHistory.length > 0) && (
+          <div className="vault-positions-panel">
 
             <div className="vault-positions-header">
               <div>
@@ -1097,7 +1182,7 @@ export default function App() {
 
         {marketsError && markets.length === 0 && <div className="state-panel"><CircleHelp size={20} /><div><strong>Prices are taking a moment</strong><p>{marketsError}</p><button className="text-button" onClick={() => setMarketsRetry((value) => value + 1)}>Try again <ArrowRight size={14} /></button></div></div>}
         {marketsLoading && markets.length === 0 && <div className="signal-grid skeleton-grid">{[0, 1, 2].map((item) => <div className="signal-card skeleton" key={item} />)}</div>}
-        {markets.length > 0 && <><div className="signal-feed-status"><span><i /> {marketsStale ? 'Showing last received prices' : 'Live Monad Testnet prices'}</span><span>{marketsUpdatedAt ? `Received ${new Date(marketsUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : ''}{marketsError ? ' · reconnecting' : ''}</span></div><div className="signal-grid">{markets.map((market) => <article className="signal-card" key={market.id}><div className="signal-card-top"><span>{market.symbol} / AUSD</span><span className={market.changePct >= 0 ? 'signal-up' : 'signal-down'}>{market.changePct >= 0 ? '+' : ''}{market.changePct.toFixed(2)}%</span></div><h3>${market.mark.toLocaleString(undefined, { maximumFractionDigits: 6 })}</h3><div className="signal-meta"><span>Mark price</span><span>Perpl · Testnet</span></div><div className="signal-observed">{market.updatedAt ? `Market updated ${new Date(market.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Market update time unavailable'}</div><div className="signal-actions"><button onClick={() => requestSignal(market)}>Ask an agent <ArrowRight size={14} /></button><button className="trade-preview-button" onClick={() => setTradeMarket(market)}>Trade <ArrowRight size={14} /></button></div></article>)}</div></>}
+        {markets.length > 0 && <><div className="signal-feed-status"><span><i /> {marketsStale ? 'Showing last received prices' : 'Live Monad Testnet prices'}</span><span>{marketsUpdatedAt ? `Received ${new Date(marketsUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : ''}{marketsError ? ' · reconnecting' : ''}</span></div><div className="signal-grid">{markets.map((market) => <article className="signal-card" key={market.id}><div className="signal-card-top"><span>{market.symbol} / AUSD</span><span className={market.changePct >= 0 ? 'signal-up' : 'signal-down'}>{market.changePct >= 0 ? '+' : ''}{market.changePct.toFixed(2)}%</span></div><h3>${market.mark.toLocaleString(undefined, { maximumFractionDigits: 6 })}</h3><div className="signal-meta"><span>Mark price</span><span>Perpl · Testnet</span></div><div className="signal-observed">{market.updatedAt ? `Market updated ${new Date(market.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Market update time unavailable'}</div><div className="signal-actions"><button type="button" className="signal-ask-btn" onClick={() => requestSignal(market)}>Ask Agent</button><button type="button" className="signal-trade-btn long" onClick={() => { setTradeIntent({ direction: 'long' }); setTradeMarket(market) }}>Long</button><button type="button" className="signal-trade-btn short" onClick={() => { setTradeIntent({ direction: 'short' }); setTradeMarket(market) }}>Short</button></div></article>)}</div></>}
       </section>}
 
       {(route === 'agents' || route === 'profile') && <section className="market" id="agents">

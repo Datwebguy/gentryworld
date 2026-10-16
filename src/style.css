@@ -28,16 +28,17 @@ button { cursor: pointer; }
 a { color: inherit; text-decoration: none; }
 
 .app-shell { min-height: 100vh; overflow: hidden; }
-.topbar { height: 76px; padding: 0 max(28px, calc((100vw - 1280px)/2)); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; border-bottom: 1px solid var(--line); background: rgba(243,240,232,.92); backdrop-filter: blur(16px); position: sticky; top: 0; z-index: 30; }
-.brand { display: inline-flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 700; letter-spacing: -.05em; width: fit-content; }
+.topbar { height: 76px; padding: 0 max(28px, calc((100vw - 1280px)/2)); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; border-bottom: 1px solid var(--line); background: rgba(243,240,232,.92); backdrop-filter: blur(16px); position: sticky; top: 0; z-index: 40; }
+.topbar-main { display: contents; }
+.brand { display: inline-flex; align-items: center; gap: 10px; font-size: 20px; font-weight: 700; letter-spacing: -.05em; width: fit-content; text-decoration: none; color: var(--ink); }
 .brand-mark { width: 31px; height: 31px; display: grid; place-items: center; border-radius: 9px; color: #fff; background: var(--ink); }
-.topbar nav { display: flex; gap: 34px; font-size: 13px; font-weight: 600; }
-.topbar nav a { color: var(--muted); transition: color .2s; }
+.topbar nav { display: flex; align-items: center; justify-content: center; gap: 28px; font-size: 13px; font-weight: 600; }
+.topbar nav a { color: var(--muted); text-decoration: none; transition: color .2s; }
 .topbar nav a:hover { color: var(--ink); }
-.top-actions { display: flex; justify-content: flex-end; align-items: center; gap: 12px; }
+.top-actions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; flex-shrink: 0; }
 .network-badge { font: 11px var(--mono); color: var(--muted); display: flex; align-items: center; gap: 7px; }
 .network-badge i, .available-pill i { width: 7px; height: 7px; border-radius: 50%; background: #39b774; box-shadow: 0 0 0 4px rgba(57,183,116,.12); }
-.wallet-button, .secondary-button, .refresh-button { border: 1px solid var(--line); background: transparent; color: var(--ink); display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-radius: 10px; font-weight: 600; }
+.wallet-button, .secondary-button, .refresh-button { border: 1px solid var(--line); background: transparent; color: var(--ink); display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-radius: 10px; font-weight: 600; cursor: pointer; }
 .wallet-button { padding: 10px 14px; font-size: 12px; background: var(--white); }
 
 main { max-width: 1280px; margin: 0 auto; padding: 0 28px; }
@@ -672,25 +673,32 @@ footer > div { display: flex; justify-content: flex-end; gap: 22px; }
 .wallet-balance-bar {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   background: var(--surface);
   border: 1px solid var(--line);
-  padding: 5px 12px;
+  padding: 4px 10px;
   border-radius: 20px;
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .wallet-balance-item {
   display: inline-flex;
   align-items: center;
   gap: 5px;
   color: var(--ink);
+  font-size: 12px;
 }
 .wallet-balance-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: #10b981;
+}
+.balance-sep {
+  color: var(--line);
+  font-weight: bold;
 }
 .faucet-claim-pill {
   display: inline-flex;
@@ -705,6 +713,7 @@ footer > div { display: flex; justify-content: flex-end; gap: 22px; }
   font-weight: 700;
   cursor: pointer;
   transition: all .15s ease;
+  white-space: nowrap;
 }
 .faucet-claim-pill:hover:not(:disabled) {
   background: #10b981;
@@ -715,10 +724,113 @@ footer > div { display: flex; justify-content: flex-end; gap: 22px; }
   cursor: not-allowed;
 }
 
+/* Enhanced Wallet Account Menu Dropdown */
+.wallet-account-menu {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(340px, calc(100vw - 24px));
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.22);
+  animation: fade-in .15s ease;
+}
+.wallet-menu-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line);
+}
+.wallet-menu-header > span {
+  color: var(--muted);
+  font: 700 9px var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.wallet-menu-header > strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.wallet-menu-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+}
+.wallet-menu-section-title {
+  font: 700 9px var(--mono);
+  color: var(--muted);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.wallet-menu-balance-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.wallet-menu-bal-card {
+  padding: 8px 10px;
+  background: var(--paper-2);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wallet-menu-bal-card span {
+  font-size: 10px;
+  color: var(--muted);
+}
+.wallet-menu-bal-card strong {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.wallet-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all .15s ease;
+}
+.wallet-action-btn.primary {
+  background: #10b981;
+  color: #fff;
+}
+.wallet-action-btn.primary:hover {
+  background: #059669;
+}
+.wallet-action-btn.secondary {
+  background: var(--paper-2);
+  border-color: var(--line);
+  color: var(--ink);
+}
+.wallet-action-btn.secondary:hover {
+  background: var(--surface);
+}
+
 /* PnL Card Share Modal */
+.pnl-card-modal-container,
 .pnl-share-modal {
-  max-width: 680px;
+  max-width: 820px;
   width: 95vw;
+  max-height: 90vh;
+  overflow-y: auto;
 }
 .pnl-canvas-wrapper {
   margin: 16px 0;
@@ -983,6 +1095,7 @@ footer > div { display: flex; justify-content: flex-end; gap: 22px; }
   }
 
   /* PnL Share Card Modal Mobile */
+  .pnl-card-modal-container,
   .pnl-share-modal {
     width: 100% !important;
     max-width: 100% !important;
@@ -1083,5 +1196,8 @@ footer > div { display: flex; justify-content: flex-end; gap: 22px; }
     min-height: 42px !important;
     justify-content: center !important;
     font-size: 12px !important;
+  }
+  .signal-actions button.signal-ask-btn {
+    grid-column: 1 / -1 !important;
   }
 }

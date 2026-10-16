@@ -5,7 +5,7 @@ import { createHash, createPrivateKey, randomBytes, sign as signEd25519 } from '
 import { ExactEvmScheme } from '@x402/evm/exact/server'
 import { HTTPFacilitatorClient, x402ResourceServer } from '@x402/core/server'
 import { paymentMiddleware } from '@x402/express'
-import { createPublicClient, createWalletClient, formatEther, formatUnits, http, isAddress, parseAbi, parseUnits, verifyMessage } from 'viem'
+import { createPublicClient, createWalletClient, decodeEventLog, formatEther, formatUnits, getAddress, http, isAddress, parseAbi, parseUnits, verifyMessage } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
@@ -142,11 +142,13 @@ async function getUserVaultBalanceWithOnchain(address) {
   // Sync on-chain shares if user deposited on-chain
   try {
     if (managedVaultAddress) {
+      const cleanVault = getAddress(managedVaultAddress)
+      const cleanUser = getAddress(norm)
       const onchainShares = await publicClient.readContract({
-        address: managedVaultAddress,
+        address: cleanVault,
         abi: managedVaultAbi,
         functionName: 'shares',
-        args: [norm]
+        args: [cleanUser]
       })
       const sharesNum = Number(formatUnits(onchainShares, 6))
       if (sharesNum > (acc.deposited || 0)) {
@@ -154,7 +156,9 @@ async function getUserVaultBalanceWithOnchain(address) {
         saveBalances()
       }
     }
-  } catch { /* Fallback */ }
+  } catch (err) {
+    console.warn('Sync onchain shares notice for', norm, err?.message)
+  }
 
   const openPositions = storedPositions.filter((p) => p.address?.toLowerCase() === norm && p.status === 'open')
   let lockedMargin = 0
@@ -978,44 +982,82 @@ app.get('/api/vault/user-balance', async (req, res) => {
 app.post('/api/vault/deposit', async (req, res) => {
   try {
     if (!managedVaultAddress) return res.status(503).json({ error: 'Managed execution is being initialized.' })
-    const address = String(req.body?.address || '').toLowerCase().trim()
+    const rawAddress = String(req.body?.address || '').trim()
     const txHash = String(req.body?.txHash || '').trim()
 
-    if (!isAddress(address) || !/^0x[a-f\d]{64}$/i.test(txHash)) {
+    if (!isAddress(rawAddress) || !/^0x[a-f\d]{64}$/i.test(txHash)) {
       return res.status(400).json({ error: 'Valid wallet address and transaction hash required.' })
     }
+
+    const cleanAddress = getAddress(rawAddress.toLowerCase())
+    const cleanVault = getAddress(managedVaultAddress)
 
     const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash })
     if (receipt.status !== 'success') {
       return res.status(400).json({ error: 'Deposit transaction did not succeed on Monad Testnet.' })
     }
 
-    // Read onchain shares for this user
-    const onchainShares = await publicClient.readContract({
-      address: managedVaultAddress,
-      abi: managedVaultAbi,
-      functionName: 'shares',
-      args: [address]
-    })
-    const sharesAmount = Number(formatUnits(onchainShares, 6))
+    // Decode Deposit event from receipt logs
+    let eventAssets = 0
+    let eventShares = 0
+    for (const log of receipt.logs || []) {
+      try {
+        const decoded = decodeEventLog({
+          abi: managedVaultAbi,
+          data: log.data,
+          topics: log.topics
+        })
+        if (decoded.eventName === 'Deposit') {
+          eventAssets = Number(formatUnits(decoded.args.assets, 6))
+          eventShares = Number(formatUnits(decoded.args.sharesMinted, 6))
+          break
+        }
+      } catch { /* Try next log */ }
+    }
 
-    const acc = getUserAccount(address)
-    if (sharesAmount > acc.deposited) {
-      const delta = sharesAmount - acc.deposited
-      acc.deposited = Number(sharesAmount.toFixed(4))
+    // Read total onchain shares for this user
+    let sharesAmount = 0
+    try {
+      const onchainShares = await publicClient.readContract({
+        address: cleanVault,
+        abi: managedVaultAbi,
+        functionName: 'shares',
+        args: [cleanAddress]
+      })
+      sharesAmount = Number(formatUnits(onchainShares, 6))
+    } catch (err) {
+      console.warn('Error reading onchain shares:', err?.message)
+    }
+
+    const acc = getUserAccount(cleanAddress)
+    const depositDelta = eventAssets > 0 ? eventAssets : (sharesAmount > (acc.deposited || 0) ? (sharesAmount - (acc.deposited || 0)) : 0)
+    const targetDeposited = Math.max(sharesAmount, Number(((acc.deposited || 0) + depositDelta).toFixed(4)))
+
+    if (targetDeposited > (acc.deposited || 0)) {
+      const delta = Number((targetDeposited - (acc.deposited || 0)).toFixed(4))
+      acc.deposited = targetDeposited
       acc.history.push({
         type: 'deposit',
-        amount: Number(delta.toFixed(4)),
+        amount: delta,
+        txHash,
+        timestamp: Date.now()
+      })
+      saveBalances()
+    } else if (eventAssets > 0) {
+      acc.deposited = Number(((acc.deposited || 0) + eventAssets).toFixed(4))
+      acc.history.push({
+        type: 'deposit',
+        amount: eventAssets,
         txHash,
         timestamp: Date.now()
       })
       saveBalances()
     }
 
-    const bal = await getUserVaultBalanceWithOnchain(address)
+    const bal = await getUserVaultBalanceWithOnchain(cleanAddress)
     res.json({
       success: true,
-      deposited: sharesAmount,
+      deposited: acc.deposited,
       balance: bal,
       transaction: txHash
     })
@@ -1028,46 +1070,50 @@ app.post('/api/vault/deposit', async (req, res) => {
 app.post('/api/vault/withdraw', async (req, res) => {
   try {
     if (!managedVaultAddress) return res.status(503).json({ error: 'Managed execution is being initialized.' })
-    const address = String(req.body?.address || '').toLowerCase().trim()
+    const rawAddress = String(req.body?.address || '').trim()
     const amount = Number(req.body?.amount)
     const nonce = String(req.body?.nonce || '').trim()
     const issuedAt = Number(req.body?.issuedAt)
     const signature = String(req.body?.signature || '').trim()
 
-    if (!isAddress(address) || !Number.isFinite(amount) || amount <= 0) {
+    if (!isAddress(rawAddress) || !Number.isFinite(amount) || amount <= 0) {
       return res.status(400).json({ error: 'Enter a valid withdrawal amount.' })
     }
     if (!/^[a-zA-Z0-9_-]{16,100}$/.test(nonce) || !Number.isInteger(issuedAt) || Math.abs(Date.now() - issuedAt) > 5 * 60_000 || !/^0x[a-f\d]{130}$/i.test(signature)) {
       return res.status(401).json({ error: 'Approve this withdrawal with your Privy wallet.' })
     }
 
-    const orderKey = `withdraw:${address}:${nonce}`
+    const cleanAddress = getAddress(rawAddress.toLowerCase())
+    const cleanVault = getAddress(managedVaultAddress)
+
+    const orderKey = `withdraw:${cleanAddress.toLowerCase()}:${nonce}`
     if (consumedManagedOrderNonces.has(orderKey)) return res.status(409).json({ error: 'That withdrawal approval has already been used.' })
 
-    const message = `GentrY Testnet vault withdrawal\nWallet: ${address}\nAmount: ${amount}\nIssued at: ${issuedAt}\nNonce: ${nonce}`
-    const authorized = await verifyMessage({ address, message, signature })
+    const message = `GentrY Testnet vault withdrawal\nWallet: ${cleanAddress.toLowerCase()}\nAmount: ${amount}\nIssued at: ${issuedAt}\nNonce: ${nonce}`
+    const authorized = await verifyMessage({ address: cleanAddress, message, signature })
     if (!authorized) return res.status(401).json({ error: 'The wallet approval could not be verified.' })
 
     consumedManagedOrderNonces.set(orderKey, Date.now())
     for (const [key, createdAt] of consumedManagedOrderNonces) if (Date.now() - createdAt > 15 * 60_000) consumedManagedOrderNonces.delete(key)
 
-    const bal = await getUserVaultBalanceWithOnchain(address)
+    const bal = await getUserVaultBalanceWithOnchain(cleanAddress)
     if (amount > bal.availableBalance) {
       return res.status(400).json({ error: `Withdrawal amount ($${amount.toFixed(2)}) exceeds your available balance ($${bal.availableBalance.toFixed(2)}).` })
     }
 
     const ausdAddress = '0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC'
+    const cleanAusd = getAddress(ausdAddress)
     const erc20Abi = parseAbi(['function balanceOf(address account) view returns (uint256)'])
     const amountUnits = parseUnits(amount.toFixed(6), 6)
 
-    const freeAssets = await publicClient.readContract({ address: ausdAddress, abi: erc20Abi, functionName: 'balanceOf', args: [managedVaultAddress] })
+    const freeAssets = await publicClient.readContract({ address: cleanAusd, abi: erc20Abi, functionName: 'balanceOf', args: [cleanVault] }).catch(() => 0n)
     const wallet = managedVaultWallet()
 
     // If vault does not have enough idle AUSD, defund from Perpl
     if (freeAssets < amountUnits) {
       const needed = amountUnits - freeAssets + parseUnits('50', 6)
       try {
-        const defundHash = await wallet.writeContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'defundPerpl', args: [needed] })
+        const defundHash = await wallet.writeContract({ address: cleanVault, abi: managedVaultAbi, functionName: 'defundPerpl', args: [needed] })
         await publicClient.waitForTransactionReceipt({ hash: defundHash })
       } catch (err) {
         console.error('Defund Perpl error:', err)
@@ -1075,15 +1121,15 @@ app.post('/api/vault/withdraw', async (req, res) => {
     }
 
     const hash = await wallet.writeContract({
-      address: managedVaultAddress,
+      address: cleanVault,
       abi: managedVaultAbi,
       functionName: 'payout',
-      args: [address, amountUnits]
+      args: [cleanAddress, amountUnits]
     })
     const receipt = await publicClient.waitForTransactionReceipt({ hash })
     if (receipt.status !== 'success') throw new Error('Payout transaction reverted on Monad Testnet.')
 
-    const acc = getUserAccount(address)
+    const acc = getUserAccount(cleanAddress)
     acc.withdrawn = Number(((acc.withdrawn || 0) + amount).toFixed(4))
     acc.history.push({
       type: 'withdraw',
@@ -1093,7 +1139,7 @@ app.post('/api/vault/withdraw', async (req, res) => {
     })
     saveBalances()
 
-    const updatedBal = await getUserVaultBalanceWithOnchain(address)
+    const updatedBal = await getUserVaultBalanceWithOnchain(cleanAddress)
     res.json({
       success: true,
       withdrawn: amount,
@@ -1109,18 +1155,23 @@ app.post('/api/vault/withdraw', async (req, res) => {
 
 app.get('/api/wallet/balance', async (req, res) => {
   try {
-    const address = String(req.query?.address || '').toLowerCase().trim()
-    if (!isAddress(address)) return res.status(400).json({ error: 'Valid EVM address required.' })
+    const rawAddress = String(req.query?.address || '').trim()
+    if (!isAddress(rawAddress)) return res.status(400).json({ error: 'Valid EVM address required.' })
+    const cleanAddress = getAddress(rawAddress.toLowerCase())
     const ausdAddress = '0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC'
+    const cleanAusd = getAddress(ausdAddress)
     const erc20Abi = parseAbi(['function balanceOf(address account) view returns (uint256)'])
     const [monRaw, ausdRaw] = await Promise.all([
-      publicClient.getBalance({ address }),
-      publicClient.readContract({ address: ausdAddress, abi: erc20Abi, functionName: 'balanceOf', args: [address] }).catch(() => 0n)
+      publicClient.getBalance({ address: cleanAddress }).catch(() => 0n),
+      publicClient.readContract({ address: cleanAusd, abi: erc20Abi, functionName: 'balanceOf', args: [cleanAddress] }).catch((err) => {
+        console.warn('AUSD balance read error:', err?.message)
+        return 0n
+      })
     ])
     const mon = Number(formatEther(monRaw))
     const ausd = Number(formatUnits(ausdRaw, 6))
     res.json({
-      address,
+      address: cleanAddress,
       mon: Number(mon.toFixed(4)),
       ausd: Number(ausd.toFixed(2)),
       formatted: {
@@ -1136,16 +1187,18 @@ app.get('/api/wallet/balance', async (req, res) => {
 
 app.post('/api/faucet/claim', async (req, res) => {
   try {
-    const address = String(req.body?.address || '').toLowerCase().trim()
-    if (!isAddress(address)) return res.status(400).json({ error: 'Valid EVM address required.' })
+    const rawAddress = String(req.body?.address || '').trim()
+    if (!isAddress(rawAddress)) return res.status(400).json({ error: 'Valid EVM address required.' })
+    const cleanAddress = getAddress(rawAddress.toLowerCase())
     const faucet = '0xd236c18D274E54FAccC3dd9DDA4b27965a73ee6C'
+    const cleanFaucet = getAddress(faucet)
     const faucetAbi = parseAbi(['function requestFunds(address)'])
     const wallet = managedVaultWallet()
     const hash = await wallet.writeContract({
-      address: faucet,
+      address: cleanFaucet,
       abi: faucetAbi,
       functionName: 'requestFunds',
-      args: [address]
+      args: [cleanAddress]
     })
     await publicClient.waitForTransactionReceipt({ hash })
     res.json({ success: true, transaction: hash, amount: '500 AUSD' })

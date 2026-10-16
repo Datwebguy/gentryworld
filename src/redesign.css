@@ -173,9 +173,15 @@ button:disabled { opacity: .55; cursor: wait; }
 .signal-card-top { font: 600 12px 'DM Sans',sans-serif; letter-spacing: .01em; }
 .signal-up { color: #3d7a40; }.signal-down { color: #b3483c; }
 [data-theme='dark'] .signal-up { color: #b4d58c; }[data-theme='dark'] .signal-down { color: #f49c8e; }
-.signal-observed { margin: 20px 0; padding-block: 14px; border-block: 1px solid var(--line); color: var(--muted); font-size: 10px; }
-.signal-actions { gap: 7px; flex-wrap: wrap; }
-.signal-actions button { padding: 11px 13px; }
+.signal-actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 14px; }
+.signal-actions button { padding: 9px 6px; border-radius: 9px; font-size: 11px; font-weight: 700; border: 1px solid var(--line); background: var(--paper-2); color: var(--ink); display: inline-flex; align-items: center; justify-content: center; gap: 4px; cursor: pointer; transition: all .15s ease; width: 100%; }
+.signal-actions button:hover { transform: translateY(-1px); }
+.signal-actions button.signal-trade-btn.long { background: rgba(16, 185, 129, 0.15); border-color: rgba(16, 185, 129, 0.4); color: #10b981; }
+.signal-actions button.signal-trade-btn.long:hover { background: #10b981; color: #ffffff; border-color: #10b981; }
+.signal-actions button.signal-trade-btn.short { background: rgba(239, 68, 68, 0.12); border-color: rgba(239, 68, 68, 0.35); color: #ef4444; }
+.signal-actions button.signal-trade-btn.short:hover { background: #ef4444; color: #ffffff; border-color: #ef4444; }
+.signal-actions button.signal-ask-btn { background: var(--paper-2); color: var(--muted); }
+.signal-actions button.signal-ask-btn:hover { color: var(--ink); border-color: var(--ink); }
 .market-tools > label { background: var(--white); min-height: 54px; border-radius: 30px; }
 .filter-tabs { background: var(--paper-2); padding: 5px; border-radius: 30px; }
 .filter-tabs button { border-radius: 25px; color: var(--muted); }
