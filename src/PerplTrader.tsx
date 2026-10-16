@@ -39,9 +39,10 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
     try {
       const amount = Number(notional)
       const nonce = crypto.randomUUID()
-      const message = `GentrY Testnet vault order\nWallet: ${walletAddress.toLowerCase()}\nMarket: ${market.id}\nNotional: ${amount}\nNonce: ${nonce}`
+      const issuedAt = Date.now()
+      const message = `GentrY Testnet vault order\nWallet: ${walletAddress.toLowerCase()}\nMarket: ${market.id}\nNotional: ${amount}\nIssued at: ${issuedAt}\nNonce: ${nonce}`
       const signature = await walletProvider.request({ method: 'personal_sign', params: [message, walletAddress] }) as string
-      const response = await fetch('/api/vault/order', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ marketId: market.id, notional: amount, address: walletAddress, nonce, signature }) })
+      const response = await fetch('/api/vault/order', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ marketId: market.id, notional: amount, address: walletAddress, nonce, issuedAt, signature }) })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Could not execute the managed order.')
       setResult(payload)
@@ -60,14 +61,14 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
       <p>Review the order, then GentrY submits it through its funded Perpl vault. Your Privy wallet signs you in; no separate trading credentials are required.</p>
 
       {!result && <>
-        <div className="perpl-privacy"><ShieldCheck size={15} /><span>Vault account is funded in test AUSD and each order stays inside its onchain market cap.</span></div>
+        <div className="perpl-privacy"><ShieldCheck size={15} /><span>Vault account is funded in test AUSD and each order stays inside its onchain market cap. Privy asks for a signature before GentrY submits it.</span></div>
         {!available && <div className="perpl-inline-error">This market is not enabled in the managed vault yet. Choose BTC, ETH, SOL, or MON.</div>}
         {ready === false && <div className="perpl-inline-error">Managed execution is reconnecting. Try again shortly.</div>}
         <form className="perpl-order-form" onSubmit={(event) => void execute(event)}>
           <div className="trade-direction"><button type="button" className="active long">Buy / Long</button></div>
           <div className="trade-fields"><label htmlFor="trade-notional">Order value (AUSD)<input id="trade-notional" type="number" min="0.01" max="100" step="any" inputMode="decimal" value={notional} onChange={(event) => setNotional(event.target.value)} required /><div className="trade-preset-pills">{['5', '10', '25', '50', '100'].map((value) => <button type="button" key={value} onClick={() => setNotional(value)}>${value}</button>)}</div></label></div>
           <div className="order-review"><div><span>Market</span><strong>{market.symbol} Perpetual</strong></div><div><span>Mark price</span><strong>{money(market.mark)}</strong></div><div><span>Approx. size</span><strong>{estimate ? `${estimate.size.toFixed(market.sizeDecimals ?? 4)} ${market.symbol}` : '—'}</strong></div><div><span>Execution account</span><strong>GentrY vault</strong></div></div>
-          <button className="primary-button wide" disabled={busy || !available || ready !== true || !estimate}>{busy ? <><LoaderCircle className="spin" size={16} />Submitting on Monad…</> : 'Execute protected order'}</button>
+          <button className="primary-button wide" disabled={busy || !available || ready !== true || !estimate}>{busy ? <><LoaderCircle className="spin" size={16} />Submitting on Monad…</> : 'Approve & execute order'}</button>
         </form>
       </>}
 

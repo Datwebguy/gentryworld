@@ -519,16 +519,17 @@ app.post('/api/vault/order', async (req, res) => {
     const notional = Number(req.body?.notional)
     const address = String(req.body?.address || '')
     const nonce = String(req.body?.nonce || '')
+    const issuedAt = Number(req.body?.issuedAt)
     const signature = String(req.body?.signature || '')
     if (![16, 32, 48, 64].includes(marketId) || !Number.isFinite(notional) || notional <= 0 || notional > 100) {
       return res.status(400).json({ error: 'Choose a supported market and an order value up to $100.' })
     }
-    if (!isAddress(address) || !/^[a-zA-Z0-9_-]{16,100}$/.test(nonce) || !/^0x[a-f\d]{130}$/i.test(signature)) {
+    if (!isAddress(address) || !/^[a-zA-Z0-9_-]{16,100}$/.test(nonce) || !Number.isInteger(issuedAt) || Math.abs(Date.now() - issuedAt) > 5 * 60_000 || !/^0x[a-f\d]{130}$/i.test(signature)) {
       return res.status(401).json({ error: 'Approve this order with your Privy wallet before it can be submitted.' })
     }
     const orderKey = `${address.toLowerCase()}:${nonce}`
     if (consumedManagedOrderNonces.has(orderKey)) return res.status(409).json({ error: 'That order approval has already been used.' })
-    const message = `GentrY Testnet vault order\nWallet: ${address.toLowerCase()}\nMarket: ${marketId}\nNotional: ${notional}\nNonce: ${nonce}`
+    const message = `GentrY Testnet vault order\nWallet: ${address.toLowerCase()}\nMarket: ${marketId}\nNotional: ${notional}\nIssued at: ${issuedAt}\nNonce: ${nonce}`
     const authorized = await verifyMessage({ address, message, signature })
     if (!authorized) return res.status(401).json({ error: 'The wallet approval could not be verified.' })
     consumedManagedOrderNonces.set(orderKey, Date.now())
