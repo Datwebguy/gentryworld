@@ -435,3 +435,187 @@ footer > div { display: flex; justify-content: flex-end; gap: 22px; }
 .portal-primary p { color: rgba(255,255,255,.72); }
 .portal-card strong { margin-top: auto; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; }
 @media (max-width: 800px) { .portal-grid { grid-template-columns: 1fr; } .portal-card { min-height: 210px; } }
+
+/* Vault Positions styling */
+.vault-positions-panel {
+  margin-bottom: 28px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.vault-positions-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+.vault-positions-header span {
+  font: 11px var(--mono);
+  letter-spacing: .08em;
+  color: var(--muted);
+}
+.vault-positions-header h3 {
+  margin: 4px 0 0;
+  font-size: 20px;
+  color: var(--ink);
+}
+.vault-account-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 99px;
+  border: 1px solid var(--line);
+  background: var(--surface-soft);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.vault-account-tag i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #25804a;
+}
+.vault-positions-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+.vault-position-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  background: var(--white);
+  display: grid;
+  gap: 12px;
+}
+.pos-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.pos-card-head strong {
+  font-size: 15px;
+  color: var(--ink);
+}
+.pos-side-pill {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 6px;
+  letter-spacing: .05em;
+}
+.pos-side-pill.long {
+  background: #e2f6ec;
+  color: #087b51;
+  border: 1px solid #36b985;
+}
+.pos-side-pill.short {
+  background: #fff0ed;
+  color: #bb443a;
+  border: 1px solid #f08478;
+}
+.pos-card-metrics {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.pos-card-metrics > div {
+  display: grid;
+  gap: 3px;
+}
+.pos-card-metrics span {
+  font-size: 10px;
+  color: var(--muted);
+}
+.pos-card-metrics strong {
+  font-size: 12px;
+  color: var(--ink);
+}
+.pos-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.pos-close-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 7px;
+  border: 1px solid #f08478;
+  background: #fff0ed;
+  color: #bb443a;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.pos-close-btn:hover:not(:disabled) {
+  background: #bb443a;
+  color: #fff;
+}
+.pos-close-btn:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
+.pos-tx-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--accent);
+  text-decoration: none;
+}
+.pos-tx-link:hover {
+  text-decoration: underline;
+}
+
+/* Modal Positions section */
+.modal-positions-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.modal-positions-section h4 {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.modal-positions-list {
+  display: grid;
+  gap: 8px;
+}
+.modal-position-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--surface);
+  font-size: 11px;
+}
+.modal-position-info {
+  display: grid;
+  gap: 2px;
+}
+.modal-position-pnl {
+  text-align: right;
+  display: grid;
+  gap: 2px;
+}
+.modal-position-pnl strong {
+  font-size: 11px;
+}

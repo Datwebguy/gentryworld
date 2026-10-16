@@ -1,6 +1,6 @@
 import { Home } from './Home'
 import { CopyTerminal } from './CopyTerminal'
-import { PerplTrader, type TradeIntent } from './PerplTrader'
+import { PerplTrader, type TradeIntent, type VaultPosition } from './PerplTrader'
 import { ChatErrorBoundary } from './ChatErrorBoundary'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
@@ -246,6 +246,28 @@ export default function App() {
   const [tradeMarket, setTradeMarket] = useState<Market | null>(null)
   const [tradeIntent, setTradeIntent] = useState<TradeIntent | undefined>(undefined)
   const [signalMarket, setSignalMarket] = useState<Market | null>(null)
+  const [vaultPositions, setVaultPositions] = useState<VaultPosition[]>([])
+  const [closingPositionId, setClosingPositionId] = useState<string | null>(null)
+
+  const fetchVaultPositions = useCallback(async () => {
+    if (!walletAddress) {
+      setVaultPositions([])
+      return
+    }
+    try {
+      const response = await fetch(`/api/vault/positions?address=${encodeURIComponent(walletAddress)}`)
+      if (response.ok) {
+        const payload = await response.json()
+        setVaultPositions(Array.isArray(payload.positions) ? payload.positions : [])
+      }
+    } catch { /* Silent */ }
+  }, [walletAddress])
+
+  useEffect(() => {
+    void fetchVaultPositions()
+    const interval = setInterval(() => void fetchVaultPositions(), 8000)
+    return () => clearInterval(interval)
+  }, [fetchVaultPositions])
 
   useEffect(() => {
     const normalizeHash = () => {
@@ -451,6 +473,33 @@ export default function App() {
     catch { setNotice('Switch to Monad Testnet in your wallet and try again.') }
   }
 
+  async function closeVaultPosition(pos: VaultPosition) {
+    if (!walletAddress || !walletProvider) {
+      await onConnect()
+      return
+    }
+    setClosingPositionId(pos.id)
+    try {
+      const nonce = crypto.randomUUID()
+      const issuedAt = Date.now()
+      const message = `GentrY Testnet close position\nWallet: ${walletAddress.toLowerCase()}\nPosition: ${pos.id}\nIssued at: ${issuedAt}\nNonce: ${nonce}`
+      const signature = await walletProvider.request({ method: 'personal_sign', params: [message, walletAddress] }) as string
+      const response = await fetch('/api/vault/close', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ positionId: pos.id, address: walletAddress, nonce, issuedAt, signature })
+      })
+      const payload = await response.json()
+      if (!response.ok) throw new Error(payload.error || 'Could not close position.')
+      setNotice(`Closed ${pos.side.toUpperCase()} ${pos.symbol} position with ${Number(payload.realizedPnl || 0) >= 0 ? '+' : ''}$${Number(payload.realizedPnl || 0).toFixed(2)} PnL.`)
+      await fetchVaultPositions()
+    } catch (cause) {
+      setNotice(cause instanceof Error ? cause.message : 'Could not close position.')
+    } finally {
+      setClosingPositionId(null)
+    }
+  }
+
   async function copyWalletAddress() {
     if (!walletAddress) return
     try {
@@ -628,6 +677,76 @@ export default function App() {
 
       {route === 'signals' && <section className="signals-section" id="signals">
         <div className="workspace-heading"><div><span>LIVE MARKET SIGNALS</span><h2>See what is moving.</h2><p>Follow prices and market changes. Choose a market to get a closer look.</p></div><button className="refresh-button" disabled={marketsLoading} onClick={() => setMarketsRetry((value) => value + 1)}>{marketsLoading ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}Refresh</button></div>
+
+        {vaultPositions.length > 0 && (
+          <div className="vault-positions-panel">
+            <div className="vault-positions-header">
+              <div>
+                <span>MANAGED VAULT POSITIONS</span>
+                <h3>Your Active Positions ({vaultPositions.length})</h3>
+              </div>
+              <span className="vault-account-tag"><i /> Monad Testnet Vault</span>
+            </div>
+            <div className="vault-positions-grid">
+              {vaultPositions.map((pos) => (
+                <article className="vault-position-card" key={pos.id}>
+                  <div className="pos-card-head">
+                    <strong>{pos.symbol} Perpetual</strong>
+                    <span className={`pos-side-pill ${pos.side}`}>{pos.side.toUpperCase()}</span>
+                  </div>
+                  <div className="pos-card-metrics">
+                    <div>
+                      <span>Size</span>
+                      <strong>{Number(pos.size || 0).toFixed(4)} {pos.symbol}</strong>
+                    </div>
+                    <div>
+                      <span>Current value</span>
+                      <strong>${Number(pos.currentNotional || pos.notional || 0).toFixed(2)}</strong>
+                    </div>
+                    <div>
+                      <span>Entry price</span>
+                      <strong>${Number(pos.entryPrice || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>
+                    </div>
+                    <div>
+                      <span>Current mark</span>
+                      <strong>${Number(pos.currentMark || pos.entryPrice || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>
+                    </div>
+                    <div>
+                      <span>Unrealized PnL ($)</span>
+                      <strong className={Number(pos.unrealizedPnl || 0) >= 0 ? 'signal-up' : 'signal-down'}>
+                        {Number(pos.unrealizedPnl || 0) >= 0 ? '+' : ''}${Number(pos.unrealizedPnl || 0).toFixed(2)}
+                      </strong>
+                    </div>
+                    <div>
+                      <span>PnL (%)</span>
+                      <strong className={Number(pos.pnlPct || 0) >= 0 ? 'signal-up' : 'signal-down'}>
+                        {Number(pos.pnlPct || 0) >= 0 ? '+' : ''}{Number(pos.pnlPct || 0).toFixed(2)}%
+                      </strong>
+                    </div>
+                  </div>
+                  <div className="pos-card-actions">
+                    <button
+                      className="pos-close-btn"
+                      disabled={closingPositionId === pos.id}
+                      onClick={() => void closeVaultPosition(pos)}
+                    >
+                      {closingPositionId === pos.id ? <><LoaderCircle className="spin" size={13} /> Closing on Monad…</> : 'Close Position'}
+                    </button>
+                    <a
+                      href={`https://testnet.monadscan.com/tx/${pos.transaction}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="pos-tx-link"
+                    >
+                      Tx on Monad <ArrowUpRight size={13} />
+                    </a>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </div>
+        )}
+
         {marketsError && markets.length === 0 && <div className="state-panel"><CircleHelp size={20} /><div><strong>Prices are taking a moment</strong><p>{marketsError}</p><button className="text-button" onClick={() => setMarketsRetry((value) => value + 1)}>Try again <ArrowRight size={14} /></button></div></div>}
         {marketsLoading && markets.length === 0 && <div className="signal-grid skeleton-grid">{[0, 1, 2].map((item) => <div className="signal-card skeleton" key={item} />)}</div>}
         {markets.length > 0 && <><div className="signal-feed-status"><span><i /> {marketsStale ? 'Showing last received prices' : 'Live Monad Testnet prices'}</span><span>{marketsUpdatedAt ? `Received ${new Date(marketsUpdatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : ''}{marketsError ? ' · reconnecting' : ''}</span></div><div className="signal-grid">{markets.map((market) => <article className="signal-card" key={market.id}><div className="signal-card-top"><span>{market.symbol} / AUSD</span><span className={market.changePct >= 0 ? 'signal-up' : 'signal-down'}>{market.changePct >= 0 ? '+' : ''}{market.changePct.toFixed(2)}%</span></div><h3>${market.mark.toLocaleString(undefined, { maximumFractionDigits: 6 })}</h3><div className="signal-meta"><span>Mark price</span><span>Perpl · Testnet</span></div><div className="signal-observed">{market.updatedAt ? `Market updated ${new Date(market.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Market update time unavailable'}</div><div className="signal-actions"><button onClick={() => requestSignal(market)}>Ask an agent <ArrowRight size={14} /></button><button className="trade-preview-button" onClick={() => setTradeMarket(market)}>Trade <ArrowRight size={14} /></button></div></article>)}</div></>}
@@ -684,7 +803,7 @@ export default function App() {
 
     {chatSession && <ChatErrorBoundary onClose={() => { setChatSession(null); setChatInput(''); setChatMessages([]); setChatLastResult(null) }}><div className="modal-backdrop"><section className="modal agent-chat-modal" aria-label={`Chat with ${chatSession.endpoint.name || 'market research agent'}`}><button className="close-button" disabled={chatBusy} onClick={closeChat}><X size={19} /></button><span className="modal-kicker">AGENT RESEARCH · {chatSession.market.symbol}</span><h2>{chatSession.endpoint.name || 'Market Research Specialist'}.</h2><p>Click “Send message and pay” to approve the x402 payment in Privy. The agent analyzes live {chatSession.market.symbol} market context and risk, then answers below.</p><div className="agent-chat-messages">{chatMessages.length === 0 && <div className="agent-chat-empty">Start with a question about {chatSession.market.symbol}. You can ask follow-up questions, too.</div>}{chatMessages.map((message, index) => <article className={`agent-chat-message ${message.role}`} key={`${index}-${message.role}`}><span>{message.role === 'user' ? 'You' : chatSession.endpoint.name || 'Market research agent'}</span>{message.role === 'agent' && message.result && typeof message.result === 'object' && !Array.isArray(message.result) ? <ResultView value={message.result} /> : <p>{message.text}</p>}{message.role === 'agent' && <div className="agent-trade-action"><button type="button" onClick={() => { const isShort = /bearish|short|downside|decline|sell/i.test(message.text); setTradeIntent({ direction: isShort ? 'short' : 'long', notional: '100', leverage: '5' }); setTradeMarket(chatSession.market) }}>Trade {chatSession.market.symbol} on Perpl <ArrowRight size={13} /></button></div>}{message.paymentTx && <a className="proof-link" href={`${explorer}/tx/${message.paymentTx}`} target="_blank" rel="noreferrer">Payment confirmed <ArrowUpRight size={12} /></a>}</article>)}</div>{notice && <p className="chat-notice" role="status">{notice}</p>}<form className="agent-chat-form" onSubmit={(event) => void sendChatMessage(event)}><label htmlFor="agent-chat-input">Your message</label><textarea id="agent-chat-input" rows={3} value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder={`Ask about ${chatSession.market.symbol}…`} required /><div className="agent-chat-price">Listed price: {paymentOf(chatSession.agent, chatSession.endpoint) || 'Shown in your wallet'} per message · Privy asks you to approve before the agent runs.</div><button className="primary-button wide" disabled={chatBusy || !chatInput.trim()}>{chatBusy ? <><LoaderCircle className="spin" size={16} />Check Privy for approval…</> : <><ArrowRight size={16} />Send message and pay</>}</button></form><p className="perpl-network-note">Any trade remains a draft until you review and place it.</p></section></div></ChatErrorBoundary>}
 
-    {tradeMarket && <PerplTrader market={tradeMarket} intent={tradeIntent} walletAddress={walletAddress} onConnect={onConnect} onClose={() => { setTradeMarket(null); setTradeIntent(undefined) }} onNotice={setNotice} />}
+    {tradeMarket && <PerplTrader market={tradeMarket} intent={tradeIntent} walletAddress={walletAddress} onConnect={onConnect} onClose={() => { setTradeMarket(null); setTradeIntent(undefined); void fetchVaultPositions() }} onNotice={setNotice} />}
 
     {showRegister && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && busy === null) setShowRegister(false) }}><section className="modal"><button className="close-button" aria-label="Close publish modal" onClick={() => setShowRegister(false)}><X size={19} /></button><span className="modal-kicker">PUBLISH AN AGENT</span><h2>Join the network.</h2><p>Provide a public profile containing the agent’s name, description, capabilities, and available services.</p><form onSubmit={(event) => void onRegister(event)}><label htmlFor="profile-uri">Profile link</label><input id="profile-uri" type="url" value={metadataUri} onChange={(event) => setMetadataUri(event.target.value)} placeholder="https://…" required /><div className="identity-note"><Fingerprint size={18} /><span>Approve registration in your wallet to publish your agent.</span></div><button className="primary-button wide" disabled={!metadataUri.trim() || busy !== null}>{busy === 'register' ? <LoaderCircle className="spin" size={16} /> : <Wallet size={16} />}Connect and register</button></form></section></div>}
   </div>

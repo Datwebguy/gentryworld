@@ -7,3 +7,6 @@ dist/
 *.tsbuildinfo
 artifacts/
 .hyperframes/
+ref_audio.aac
+test_vo.wav
+demo-video/

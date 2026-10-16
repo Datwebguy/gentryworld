@@ -8,6 +8,8 @@ import { paymentMiddleware } from '@x402/express'
 import { createPublicClient, createWalletClient, formatEther, formatUnits, http, isAddress, parseAbi, parseUnits, verifyMessage } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { fileURLToPath } from 'node:url'
+import fs from 'node:fs'
+import path from 'node:path'
 
 const app = express()
 app.set('trust proxy', true)
@@ -55,13 +57,37 @@ async function pacedRpcFetch(input, init) {
   return fetch(input, init)
 }
 const publicClient = createPublicClient({ chain: monad, transport: http(rpcUrl, { fetchFn: pacedRpcFetch, retryCount: 2, retryDelay: 700 }) })
-const managedVaultAddress = /^0x[a-f\d]{40}$/i.test(process.env.VAULT_ADDRESS || '') ? process.env.VAULT_ADDRESS : ''
+const managedVaultAddress = /^0x[a-f\d]{40}$/i.test(process.env.VAULT_ADDRESS || '') ? process.env.VAULT_ADDRESS : '0xb3b8923b4b913bb6627ea5333570a0fd7f03d2b8'
 const managedVaultAbi = parseAbi([
   'function hedge(uint256 marketId, bool open, uint256 lots, uint256 limitPrice)',
   'function maxHedgeLots(uint256 marketId) view returns (uint256)',
   'function perplAccountId() view returns (uint256)',
 ])
 const consumedManagedOrderNonces = new Map()
+
+const dataDir = fileURLToPath(new URL('./data', import.meta.url))
+try { if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true }) } catch { /* Ignore */ }
+const positionsFilePath = path.join(dataDir, 'vault-positions.json')
+
+function loadPositions() {
+  try {
+    if (fs.existsSync(positionsFilePath)) {
+      const data = JSON.parse(fs.readFileSync(positionsFilePath, 'utf8'))
+      if (Array.isArray(data)) return data
+    }
+  } catch { /* Fallback */ }
+  return []
+}
+
+let storedPositions = loadPositions()
+
+function savePositions() {
+  try {
+    fs.writeFileSync(positionsFilePath, JSON.stringify(storedPositions, null, 2), 'utf8')
+  } catch (err) {
+    console.error('Failed to save vault positions:', err)
+  }
+}
 
 function managedVaultWallet() {
   const raw = String(process.env.KEEPER_PRIVATE_KEY || '').trim().replace(/^['"]|['"]$/g, '')
@@ -506,16 +532,62 @@ app.get('/api/vault/status', async (_req, res) => {
   try {
     if (!managedVaultAddress) return res.status(503).json({ error: 'Managed execution is being initialized.' })
     const accountId = await publicClient.readContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'perplAccountId' })
-    res.json({ ready: accountId > 0n, vault: managedVaultAddress, perplAccountId: accountId.toString(), network: 'Monad Testnet' })
+    const marketIds = [16, 32, 48, 64]
+    const caps = {}
+    await Promise.all(marketIds.map(async (id) => {
+      try {
+        const cap = await publicClient.readContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'maxHedgeLots', args: [BigInt(id)] })
+        caps[id] = Number(cap)
+      } catch {
+        caps[id] = 0
+      }
+    }))
+    res.json({ ready: accountId > 0n, vault: managedVaultAddress, perplAccountId: accountId.toString(), caps, network: 'Monad Testnet' })
   } catch {
     res.status(503).json({ error: 'Managed execution is temporarily unavailable.' })
   }
 })
 
+async function resolvePerplMarket(marketId) {
+  let priceDecimals = 0
+  let sizeDecimals = 0
+  let markRaw = 0n
+  let symbol = ''
+  try {
+    const contextResponse = await fetch('https://testnet.perpl.xyz/api/v1/pub/context', { signal: AbortSignal.timeout(4000) })
+    if (contextResponse.ok) {
+      const context = await contextResponse.json()
+      const market = context.markets?.find((item) => Number(item.id) === Number(marketId) && item.config?.is_open)
+      if (market) {
+        priceDecimals = Number(market.config?.price_decimals || 0)
+        sizeDecimals = Number(market.config?.size_decimals || 0)
+        markRaw = BigInt(market.state?.orl || 0)
+        symbol = market.symbol
+      }
+    }
+  } catch { /* Fallback to onchain read below */ }
+
+  if (markRaw === 0n) {
+    const perplExchangeAddress = '0x1964C32f0bE608E7D29302AFF5E61268E72080cc'
+    const perplInfoAbi = parseAbi([
+      'function getPerpetualInfo(uint256) view returns ((string name, string symbol, uint256 priceDecimals, uint256 lotDecimals, bytes32 linkFeedId, uint256 priceTolPer100K, uint256 marginTol, uint256 marginTolDecimals, uint256 refPriceMaxAgeSec, uint256 positionBalanceCNS, uint256 insuranceBalanceCNS, uint256 markPNS, uint256 markTimestamp, uint256 lastPNS, uint256 lastTimestamp, uint256 oraclePNS, uint256 oracleTimestampSec, uint256 longOpenInterestLNS, uint256 shortOpenInterestLNS, uint256 fundingStartBlock, int16 fundingRatePct100k, uint256 absFundingClampPctPer100K, uint8 status, uint256 basePricePNS, uint256 maxBidPriceONS, uint256 minBidPriceONS, uint256 maxAskPriceONS, uint256 minAskPriceONS, uint256 numOrders, bool ignOracle))'
+    ])
+    const info = await publicClient.readContract({ address: perplExchangeAddress, abi: perplInfoAbi, functionName: 'getPerpetualInfo', args: [BigInt(marketId)] })
+    markRaw = BigInt(info.oraclePNS)
+    priceDecimals = Number(info.priceDecimals)
+    sizeDecimals = Number(info.lotDecimals)
+    symbol = info.symbol
+  }
+
+  const mark = priceDecimals > 0 ? Number(markRaw) / (10 ** priceDecimals) : Number(markRaw)
+  return { priceDecimals, sizeDecimals, markRaw, mark, symbol }
+}
+
 app.post('/api/vault/order', async (req, res) => {
   try {
     if (!managedVaultAddress) return res.status(503).json({ error: 'Managed execution is being initialized.' })
     const marketId = Number(req.body?.marketId)
+    const side = req.body?.side === 'short' ? 'short' : 'long'
     const notional = Number(req.body?.notional)
     const address = String(req.body?.address || '')
     const nonce = String(req.body?.nonce || '')
@@ -529,20 +601,21 @@ app.post('/api/vault/order', async (req, res) => {
     }
     const orderKey = `${address.toLowerCase()}:${nonce}`
     if (consumedManagedOrderNonces.has(orderKey)) return res.status(409).json({ error: 'That order approval has already been used.' })
-    const message = `GentrY Testnet vault order\nWallet: ${address.toLowerCase()}\nMarket: ${marketId}\nNotional: ${notional}\nIssued at: ${issuedAt}\nNonce: ${nonce}`
-    const authorized = await verifyMessage({ address, message, signature })
+    
+    const messageWithSide = `GentrY Testnet vault order\nWallet: ${address.toLowerCase()}\nMarket: ${marketId}\nSide: ${side}\nNotional: ${notional}\nIssued at: ${issuedAt}\nNonce: ${nonce}`
+    const legacyMessage = `GentrY Testnet vault order\nWallet: ${address.toLowerCase()}\nMarket: ${marketId}\nNotional: ${notional}\nIssued at: ${issuedAt}\nNonce: ${nonce}`
+    let authorized = await verifyMessage({ address, message: messageWithSide, signature })
+    if (!authorized && side === 'long') {
+      authorized = await verifyMessage({ address, message: legacyMessage, signature })
+    }
     if (!authorized) return res.status(401).json({ error: 'The wallet approval could not be verified.' })
+    
     consumedManagedOrderNonces.set(orderKey, Date.now())
     for (const [key, createdAt] of consumedManagedOrderNonces) if (Date.now() - createdAt > 15 * 60_000) consumedManagedOrderNonces.delete(key)
-    const contextResponse = await fetch('https://testnet.perpl.xyz/api/v1/pub/context', { signal: AbortSignal.timeout(8000) })
-    if (!contextResponse.ok) throw new Error('Market context unavailable')
-    const context = await contextResponse.json()
-    const market = context.markets?.find((item) => Number(item.id) === marketId && item.config?.is_open)
-    const priceDecimals = Number(market?.config?.price_decimals || 0)
-    const sizeDecimals = Number(market?.config?.size_decimals || 0)
-    const markRaw = BigInt(market?.state?.orl || 0)
-    const mark = Number(markRaw) / (10 ** priceDecimals)
-    if (!market || !(mark > 0) || markRaw === 0n) return res.status(503).json({ error: 'A current Perpl price is unavailable.' })
+    
+    const { priceDecimals, sizeDecimals, markRaw, mark, symbol } = await resolvePerplMarket(marketId)
+    if (!(mark > 0) || markRaw === 0n) return res.status(503).json({ error: 'A current Perpl price is unavailable.' })
+    
     const lots = BigInt(Math.floor((notional / mark) * (10 ** sizeDecimals)))
     if (lots <= 0n) return res.status(400).json({ error: 'That order is below this market’s supported size.' })
     const [accountId, cap] = await Promise.all([
@@ -554,13 +627,184 @@ app.post('/api/vault/order', async (req, res) => {
       const maximumNotional = Number(cap) / (10 ** sizeDecimals) * mark
       return res.status(400).json({ error: `This order exceeds the current managed cap of $${maximumNotional.toFixed(2)}.` })
     }
+    const open = side === 'long'
     const wallet = managedVaultWallet()
-    const hash = await wallet.writeContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'hedge', args: [BigInt(marketId), true, lots, markRaw] })
+    const hash = await wallet.writeContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'hedge', args: [BigInt(marketId), open, lots, markRaw] })
     const receipt = await publicClient.waitForTransactionReceipt({ hash })
     if (receipt.status !== 'success') throw new Error('Transaction reverted')
-    res.json({ accepted: true, market: market.symbol, notional: Number((Number(lots) / (10 ** sizeDecimals) * mark).toFixed(6)), size: Number(lots) / (10 ** sizeDecimals), transaction: hash, vault: managedVaultAddress, perplAccountId: accountId.toString() })
-  } catch {
-    res.status(502).json({ error: 'Perpl could not execute this managed order.' })
+
+    const position = {
+      id: `pos_${Date.now()}_${randomBytes(4).toString('hex')}`,
+      address: address.toLowerCase(),
+      marketId,
+      symbol: symbol || 'PERP',
+      side,
+      size: Number(lots) / (10 ** sizeDecimals),
+      lots: lots.toString(),
+      notional: Number((Number(lots) / (10 ** sizeDecimals) * mark).toFixed(4)),
+      entryPrice: mark,
+      openedAt: Date.now(),
+      transaction: hash,
+      status: 'open',
+    }
+    storedPositions.push(position)
+    savePositions()
+
+    res.json({
+      accepted: true,
+      market: position.symbol,
+      side,
+      notional: position.notional,
+      size: position.size,
+      entryPrice: mark,
+      transaction: hash,
+      vault: managedVaultAddress,
+      perplAccountId: accountId.toString(),
+      positionId: position.id,
+    })
+  } catch (error) {
+    console.error('Vault order error:', error)
+    const msg = error instanceof Error ? error.message : 'Perpl could not execute this managed order.'
+    res.status(502).json({ error: msg.includes('revert') ? 'Transaction reverted on Monad Testnet.' : msg })
+  }
+})
+
+app.get('/api/vault/positions', async (req, res) => {
+  try {
+    const address = String(req.query?.address || '').toLowerCase().trim()
+    if (!isAddress(address)) return res.json({ positions: [] })
+
+    let markets = marketSnapshot.value?.markets
+    if (!markets || markets.length === 0) {
+      try {
+        const contextResponse = await fetch('https://testnet.perpl.xyz/api/v1/pub/context', { signal: AbortSignal.timeout(6000) })
+        if (contextResponse.ok) {
+          const context = await contextResponse.json()
+          if (Array.isArray(context.markets)) {
+            markets = context.markets.map((m) => {
+              const decimals = Number(m.config?.price_decimals || 0)
+              const mark = Number(m.state?.mrk || m.state?.orl || 0) / (10 ** decimals)
+              return { id: Number(m.id), symbol: m.symbol, mark }
+            })
+          }
+        }
+      } catch { /* Fallback */ }
+    }
+
+    const priceMap = new Map()
+    if (Array.isArray(markets)) {
+      for (const m of markets) {
+        if (m.mark > 0) priceMap.set(Number(m.id), Number(m.mark))
+      }
+    }
+
+    const userPositions = storedPositions
+      .filter((pos) => pos.address?.toLowerCase() === address && pos.status === 'open')
+      .map((pos) => {
+        const currentMark = priceMap.get(Number(pos.marketId)) || Number(pos.entryPrice || 0)
+        const size = Number(pos.size || 0)
+        const entryPrice = Number(pos.entryPrice || 0)
+        const notional = Number(pos.notional || 0)
+
+        let unrealizedPnl = 0
+        if (pos.side === 'long') {
+          unrealizedPnl = (currentMark - entryPrice) * size
+        } else {
+          unrealizedPnl = (entryPrice - currentMark) * size
+        }
+        const pnlPct = notional > 0 ? (unrealizedPnl / notional) * 100 : 0
+        const currentNotional = currentMark * size
+
+        return {
+          ...pos,
+          currentMark,
+          currentNotional,
+          unrealizedPnl: Number(unrealizedPnl.toFixed(4)),
+          pnlPct: Number(pnlPct.toFixed(2)),
+        }
+      })
+      .sort((a, b) => b.openedAt - a.openedAt)
+
+    res.json({ positions: userPositions })
+  } catch (err) {
+    console.error('Error fetching vault positions:', err)
+    res.status(500).json({ error: 'Could not fetch positions.' })
+  }
+})
+
+app.post('/api/vault/close', async (req, res) => {
+  try {
+    if (!managedVaultAddress) return res.status(503).json({ error: 'Managed execution is being initialized.' })
+    const positionId = String(req.body?.positionId || '').trim()
+    const address = String(req.body?.address || '').toLowerCase().trim()
+    const nonce = String(req.body?.nonce || '').trim()
+    const issuedAt = Number(req.body?.issuedAt)
+    const signature = String(req.body?.signature || '').trim()
+
+    if (!positionId) return res.status(400).json({ error: 'Position ID is required.' })
+    if (!isAddress(address) || !/^[a-zA-Z0-9_-]{16,100}$/.test(nonce) || !Number.isInteger(issuedAt) || Math.abs(Date.now() - issuedAt) > 5 * 60_000 || !/^0x[a-f\d]{130}$/i.test(signature)) {
+      return res.status(401).json({ error: 'Approve position closing with your Privy wallet.' })
+    }
+
+    const orderKey = `close:${address}:${nonce}`
+    if (consumedManagedOrderNonces.has(orderKey)) return res.status(409).json({ error: 'That closing approval has already been used.' })
+
+    const message = `GentrY Testnet close position\nWallet: ${address}\nPosition: ${positionId}\nIssued at: ${issuedAt}\nNonce: ${nonce}`
+    const authorized = await verifyMessage({ address, message, signature })
+    if (!authorized) return res.status(401).json({ error: 'The wallet approval could not be verified.' })
+
+    consumedManagedOrderNonces.set(orderKey, Date.now())
+    for (const [key, createdAt] of consumedManagedOrderNonces) if (Date.now() - createdAt > 15 * 60_000) consumedManagedOrderNonces.delete(key)
+
+    const posIndex = storedPositions.findIndex((p) => p.id === positionId && p.address?.toLowerCase() === address && p.status === 'open')
+    if (posIndex === -1) return res.status(404).json({ error: 'Open position not found or already closed.' })
+
+    const pos = storedPositions[posIndex]
+    const marketId = Number(pos.marketId)
+
+    const { markRaw, mark } = await resolvePerplMarket(marketId)
+    if (!(mark > 0) || markRaw === 0n) return res.status(503).json({ error: 'A current Perpl price is unavailable to close.' })
+
+    const closeOpen = pos.side !== 'long'
+    const lots = BigInt(pos.lots)
+
+    const wallet = managedVaultWallet()
+    const hash = await wallet.writeContract({
+      address: managedVaultAddress,
+      abi: managedVaultAbi,
+      functionName: 'hedge',
+      args: [BigInt(marketId), closeOpen, lots, markRaw]
+    })
+    const receipt = await publicClient.waitForTransactionReceipt({ hash })
+    if (receipt.status !== 'success') throw new Error('Transaction reverted')
+
+    const realizedPnl = pos.side === 'long'
+      ? (mark - pos.entryPrice) * pos.size
+      : (pos.entryPrice - mark) * pos.size
+
+    storedPositions[posIndex] = {
+      ...pos,
+      status: 'closed',
+      closedAt: Date.now(),
+      closePrice: mark,
+      closeTransaction: hash,
+      realizedPnl: Number(realizedPnl.toFixed(4)),
+    }
+    savePositions()
+
+    res.json({
+      accepted: true,
+      closed: true,
+      positionId: pos.id,
+      market: pos.symbol,
+      realizedPnl: Number(realizedPnl.toFixed(4)),
+      closePrice: mark,
+      transaction: hash,
+    })
+  } catch (err) {
+    console.error('Failed to close managed position:', err)
+    const msg = err instanceof Error ? err.message : 'Perpl could not close this managed position.'
+    res.status(502).json({ error: msg.includes('revert') ? 'Transaction reverted on Monad Testnet.' : msg })
   }
 })
 

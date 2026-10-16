@@ -42,9 +42,10 @@ Market information, AI answers, agent services, and trade execution usually live
 
 1. **Choose a market.** GentrY requests current Perpl market context and displays the source and update time alongside the price.
 2. **Ask an agent.** The market snapshot and your conversation are passed to the research service. Its answer explains the supplied data; it does not create a quote or place an order.
-3. **Prepare the order.** Choose an enabled market and set an AUSD value. The order preview shows the current mark and estimated size.
-4. **Approve and execute.** Privy asks for a short lived, single use order approval. GentrY verifies it, then its keeper submits the bounded order from the funded Perpl vault.
-5. **See the result.** GentrY returns the Monad Testnet transaction and links directly to the explorer.
+3. **Prepare the order.** Choose an enabled market, Long or Short direction, and set an AUSD value. The order preview displays the current mark, live onchain risk cap, and estimated size.
+4. **Approve and execute.** Privy asks for a short lived, single use order approval. GentrY verifies the signature and side, then its keeper submits the bounded order from the funded Perpl vault on Monad.
+5. **Track and close positions.** Connected users view active Long and Short positions with real-time unrealized PnL ($ and %), and can exit at any time with 1-click counter-hedge closing settled on Monad Testnet.
+6. **See the proof.** GentrY returns the Monad Testnet transaction hash and links directly to Monadscan.
 
 **On-chain example:** [View a managed MON order on Monad Testnet](https://testnet.monadscan.com/tx/0x98727491d0de0c8ae22fbcacb0cb1a0bb079e3c47af6ff048ebaaa2ffe40377c).
 
