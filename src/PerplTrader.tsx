@@ -57,7 +57,7 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
       <button className="close-button" aria-label="Close order panel" disabled={busy} onClick={onClose}><X size={19} /></button>
       <span className="modal-kicker">GENTRY VAULT · PERPL · MONAD TESTNET</span>
       <h2 id="trade-title">Trade {market.symbol} Perpetual</h2>
-      <p>Review the order, then GentrY submits it through its funded Perpl vault. Your Privy wallet signs you in; no Perpl API key is required.</p>
+      <p>Review the order, then GentrY submits it through its funded Perpl vault. Your Privy wallet signs you in; no separate trading credentials are required.</p>
 
       {!result && <>
         <div className="perpl-privacy"><ShieldCheck size={15} /><span>Vault account is funded in test AUSD and each order stays inside its onchain market cap.</span></div>
