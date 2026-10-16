@@ -57,9 +57,11 @@ async function pacedRpcFetch(input, init) {
   return fetch(input, init)
 }
 const publicClient = createPublicClient({ chain: monad, transport: http(rpcUrl, { fetchFn: pacedRpcFetch, retryCount: 2, retryDelay: 700 }) })
-const managedVaultAddress = /^0x[a-f\d]{40}$/i.test(process.env.VAULT_ADDRESS || '') ? process.env.VAULT_ADDRESS : '0xb3b8923b4b913bb6627ea5333570a0fd7f03d2b8'
+const upgradedVaultAddress = '0xd85b5c8d03d5b735fce700d7c30f2dd4f33b5a76'
+const managedVaultAddress = process.env.VAULT_ADDRESS && !['0xb3b8923b4b913bb6627ea5333570a0fd7f03d2b8', '0x51c5a96dbd783109a96e1a49f8bc803e67c87c47'].includes(process.env.VAULT_ADDRESS.toLowerCase()) ? process.env.VAULT_ADDRESS : upgradedVaultAddress
 const managedVaultAbi = parseAbi([
   'function hedge(uint256 marketId, bool open, uint256 lots, uint256 limitPrice)',
+  'function hedgeSide(uint256 marketId, uint8 side, bool open, uint256 lots, uint256 limitPrice)',
   'function maxHedgeLots(uint256 marketId) view returns (uint256)',
   'function perplAccountId() view returns (uint256)',
 ])
@@ -627,9 +629,9 @@ app.post('/api/vault/order', async (req, res) => {
       const maximumNotional = Number(cap) / (10 ** sizeDecimals) * mark
       return res.status(400).json({ error: `This order exceeds the current managed cap of $${maximumNotional.toFixed(2)}.` })
     }
-    const open = side === 'long'
+    const sideParam = side === 'long' ? 1 : 0
     const wallet = managedVaultWallet()
-    const hash = await wallet.writeContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'hedge', args: [BigInt(marketId), open, lots, markRaw] })
+    const hash = await wallet.writeContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'hedgeSide', args: [BigInt(marketId), sideParam, true, lots, markRaw] })
     const receipt = await publicClient.waitForTransactionReceipt({ hash })
     if (receipt.status !== 'success') throw new Error('Transaction reverted')
 
@@ -765,15 +767,15 @@ app.post('/api/vault/close', async (req, res) => {
     const { markRaw, mark } = await resolvePerplMarket(marketId)
     if (!(mark > 0) || markRaw === 0n) return res.status(503).json({ error: 'A current Perpl price is unavailable to close.' })
 
-    const closeOpen = pos.side !== 'long'
+    const sideParam = pos.side === 'long' ? 1 : 0
     const lots = BigInt(pos.lots)
 
     const wallet = managedVaultWallet()
     const hash = await wallet.writeContract({
       address: managedVaultAddress,
       abi: managedVaultAbi,
-      functionName: 'hedge',
-      args: [BigInt(marketId), closeOpen, lots, markRaw]
+      functionName: 'hedgeSide',
+      args: [BigInt(marketId), sideParam, false, lots, markRaw]
     })
     const receipt = await publicClient.waitForTransactionReceipt({ hash })
     if (receipt.status !== 'success') throw new Error('Transaction reverted')

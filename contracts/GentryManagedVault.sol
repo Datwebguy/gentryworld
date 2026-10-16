@@ -126,20 +126,35 @@ contract GentryManagedVault {
         perpl.withdrawCollateral(collateral);
     }
 
-    function hedge(uint256 marketId, bool open, uint256 lots, uint256 limitPrice) external onlyKeeper {
+    function hedgeSide(uint256 marketId, uint8 side, bool open, uint256 lots, uint256 limitPrice) public onlyKeeper {
         if (perplAccountId == 0) revert PerplAccountMissing();
         uint256 cap = maxHedgeLots[marketId];
         if (cap == 0 || lots > cap) revert HedgeCapExceeded();
         IPerplExchange.PerpetualInfo memory info = perpl.getPerpetualInfo(marketId);
         uint256 oracle = info.oraclePNS;
         uint256 band = oracle * maxHedgeSlippageBps / 10_000;
-        if (oracle == 0 || (open && limitPrice < oracle - band) || (!open && limitPrice > oracle + band)) revert PriceOutOfBand();
+        if (oracle == 0) revert PriceOutOfBand();
+        bool isBuy = (side == 1 && open) || (side == 0 && !open);
+        if (isBuy && limitPrice < oracle - band) revert PriceOutOfBand();
+        if (!isBuy && limitPrice > oracle + band) revert PriceOutOfBand();
+
+        uint8 orderType;
+        if (side == 1) {
+            orderType = open ? 1 : 3;
+        } else {
+            orderType = open ? 0 : 2;
+        }
+
         perpl.execOrder(IPerplExchange.OrderDesc({
-            orderDescId: block.number, perpId: marketId, orderType: open ? 1 : 3, orderId: 0,
+            orderDescId: block.number, perpId: marketId, orderType: orderType, orderId: 0,
             pricePNS: limitPrice, lotLNS: lots, expiryBlock: 0, postOnly: false,
             fillOrKill: false, immediateOrCancel: true, maxMatches: 0, leverageHdths: 100,
             lastExecutionBlock: block.number + 20, amountCNS: 0, maxNegPnlCollatBPS: 300
         }));
         emit HedgeExecuted(marketId, open, lots, limitPrice);
+    }
+
+    function hedge(uint256 marketId, bool open, uint256 lots, uint256 limitPrice) external onlyKeeper {
+        hedgeSide(marketId, 1, open, lots, limitPrice);
     }
 }

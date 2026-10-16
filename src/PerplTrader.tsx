@@ -92,6 +92,12 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
   const presets = ['5', '10', '25', '50', '100'].filter((value) => Number(value) <= maxNotional)
   const available = Boolean(caps[market.id] && caps[market.id] > 0)
 
+  useEffect(() => {
+    if (maxNotional > 0 && Number(notional) > maxNotional) {
+      setNotional(String(Math.min(10, Math.floor(maxNotional))))
+    }
+  }, [maxNotional])
+
   async function execute(event: FormEvent) {
     event.preventDefault()
     setError('')
