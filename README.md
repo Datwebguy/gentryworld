@@ -20,19 +20,19 @@
 
 Market information, AI answers, agent services, and trade execution usually live in separate places. That makes it hard to know which price an answer refers to, whether an agent is available to serve a request, what a service costs, and what happened after an order was sent.
 
-**GentrY connects those steps.** A user can inspect a live market, ask a relevant agent for context, pay for a listed service, prepare a trade, approve its details, and follow the result through to a verified on-chain fill. Agent identity and feedback provide a record of who delivered the work.
+**GentrY connects those steps.** A user can inspect a live market, ask a relevant agent for context, pay for a listed service, prepare a protected trade, approve it with Privy, and follow the vault transaction on Monad. Agent identity and feedback provide a record of who delivered the work.
 
 ### Built for
 
 | Trader | Agent builder | Marketplace explorer |
 | :--- | :--- | :--- |
-| Read current prices, ask questions, review orders, and inspect execution. | Register an agent, publish its service, and receive paid requests. | Compare agent profiles, available services, prices, and reputation. |
+| Read current prices, ask questions, approve protected orders, and inspect execution. | Register an agent, publish its service, and receive paid requests. | Compare agent profiles, available services, prices, and reputation. |
 
 ## Explore the product
 
 | Area | What happens there |
 | :--- | :--- |
-| [**Signals**](https://gentryworld.up.railway.app/#signals) | See Perpl Testnet mark prices, price movement, and the time each market was updated. Open a market for research or trading. |
+| [**Signals**](https://gentryworld.up.railway.app/#signals) | See Perpl Testnet mark prices, price movement, and the time each market was updated. Open BTC, ETH, SOL, or MON for research or managed execution. |
 | [**Research**](https://gentryworld.up.railway.app/#research) | Consult specialized agents for live market analysis, risk assessments, and trading thesis breakdowns on Perpl markets. |
 | [**Workspaces**](https://gentryworld.up.railway.app/#workspaces) | Run on-chain due diligence to inspect wallet balances, audit token contracts, and verify transaction receipts. |
 | [**Agents**](https://gentryworld.up.railway.app/#agents) | Discover ERC-8004 registered agents, inspect their descriptions and service availability, and start a priced request. |
@@ -42,11 +42,11 @@ Market information, AI answers, agent services, and trade execution usually live
 
 1. **Choose a market.** GentrY requests current Perpl market context and displays the source and update time alongside the price.
 2. **Ask an agent.** The market snapshot and your conversation are passed to the research service. Its answer explains the supplied data; it does not create a quote or place an order.
-3. **Prepare the order.** Select a Perpl account, buy or sell, amount, and leverage. You can also choose an existing position and enter an amount to close.
-4. **Review and approve.** GentrY presents the order details and estimated cost before sending the requested action to Perpl.
-5. **See the result.** The app reads order and fill history, matches the fill to the request, checks its Monad Testnet transaction receipt, and links to the explorer.
+3. **Prepare the order.** Choose an enabled market and set an AUSD value. The order preview shows the current mark and estimated size.
+4. **Approve and execute.** Privy asks for a short lived, single use order approval. GentrY verifies it, then its keeper submits the bounded order from the funded Perpl vault.
+5. **See the result.** GentrY returns the Monad Testnet transaction and links directly to the explorer.
 
-**On-chain example:** [View a recorded Perpl position close on Monad Testnet](https://testnet.monadscan.com/tx/0x39242bc91b42116cba27d137b86e7a1bcbc100460affb620e5abbb5a6302b22a).
+**On-chain example:** [View a managed MON order on Monad Testnet](https://testnet.monadscan.com/tx/0x98727491d0de0c8ae22fbcacb0cb1a0bb079e3c47af6ff048ebaaa2ffe40377c).
 
 ## Agents, payments, and trust
 
@@ -63,8 +63,10 @@ flowchart LR
     Service --> Feedback[ERC-8004 feedback]
     Research --> Review[Order review]
     User --> Review
-    Review --> Perpl[Perpl order API]
-    Perpl --> Proof[Verified Monad fill]
+    Review --> Approval[Privy order approval]
+    Approval --> Vault[GentrY managed vault]
+    Vault --> Perpl[Perpl on Monad]
+    Perpl --> Proof[Verified Monad transaction]
 ```
 
 ## How the pieces fit
@@ -72,14 +74,14 @@ flowchart LR
 | Layer | Technology | Role in GentrY |
 | :--- | :--- | :--- |
 | Network | **Monad Testnet** | Agent identity, feedback, USDC payments, and transaction verification. |
-| Market data and execution | **Perpl API** | Current perpetual market context, account positions, order submission, order status, and fills. |
+| Market data and execution | **Perpl + GentrY managed vault** | Current perpetual market context and bounded, keeper-submitted Testnet orders. |
 | Agent identity and reputation | **ERC-8004** | Registered agent profiles and on-chain feedback. |
 | Paid services | **x402** | Wallet-approved USDC payment for a listed agent request. |
 | Research | **OpenAI Responses API** | Explains a supplied market snapshot and the user's question in conversational language. |
-| Wallet | **Privy, viem** | Embedded wallet onboarding, external wallet connection, signing, contract reads, and on-chain actions. |
+| Wallet | **Privy, viem** | Embedded wallet onboarding, external wallet connection, short lived order approvals, and on-chain actions. |
 | Application | **React, TypeScript, Vite, Express** | Browser experience and the server endpoints that connect the services. |
 
-The server supplies the live snapshot to the research model and handles Perpl account requests. Perpl credentials are submitted for the requested account action and used in memory by the server; they are not committed to this repository. The browser displays order state only after reading Perpl's response and verifies linked fill transactions against Monad Testnet.
+The server supplies the live snapshot to the research model and verifies a signed order approval before it submits an enabled order through the managed vault. Each approval is single use and expires after five minutes. The keeper key remains server-side; users never provide trading credentials to GentrY.
 
 ## Run it locally
 
@@ -110,8 +112,10 @@ npm start
 | `GENTRY_AGENT_ID` | Registered agent referenced by the first-party service. |
 | `GENTRY_AGENT_PAY_TO` | Monad Testnet address receiving paid service requests. |
 | `GENTRY_AGENT_PRICE_USDC` | Listed service price in USDC. |
+| `VAULT_ADDRESS` | Deployed GentrY managed vault on Monad Testnet. |
+| `KEEPER_PRIVATE_KEY` | Server-side keeper authorized to submit bounded vault orders. |
 
-The Perpl order panel accepts credentials for the account action being requested. Keep `.env`, API keys, and wallet signing keys out of source control.
+Keep `.env`, service keys, and the vault keeper key out of source control.
 
 ## Repository guide
 
@@ -120,9 +124,10 @@ The Perpl order panel accepts credentials for the account action being requested
 | `src/Home.tsx` | Home experience and product journey. |
 | `src/App.tsx` | Signals, agent discovery, paid requests, and reputation UI. |
 | `src/CopyTerminal.tsx` | Agent following and market research entry point. |
-| `src/PerplTrader.tsx` | Order preview, position management, and execution result UI. |
+| `src/PerplTrader.tsx` | Managed order preview, Privy approval, and execution result UI. |
 | `src/chain.ts` | Monad contract interactions for identity and feedback. |
-| `server/app.js` | Market, research, agent, payment, and Perpl API routes. |
+| `server/app.js` | Market, research, agent, payment, and managed vault routes. |
+| `contracts/GentryManagedVault.sol` | Bounded Perpl execution vault contract. |
 | `public/gentry-mark.png` | GentrY brand mark and favicon. |
 
 ---
