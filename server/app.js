@@ -58,7 +58,7 @@ async function pacedRpcFetch(input, init) {
 }
 const publicClient = createPublicClient({ chain: monad, transport: http(rpcUrl, { fetchFn: pacedRpcFetch, retryCount: 2, retryDelay: 700 }) })
 const upgradedVaultAddress = '0x36838e1c1c091f18f8519104ee3c6d3aa5b7a660'
-const managedVaultAddress = process.env.VAULT_ADDRESS && !['0xb3b8923b4b913bb6627ea5333570a0fd7f03d2b8', '0x51c5a96dbd783109a96e1a49f8bc803e67c87c47'].includes(process.env.VAULT_ADDRESS.toLowerCase()) ? process.env.VAULT_ADDRESS : upgradedVaultAddress
+const managedVaultAddress = upgradedVaultAddress
 const managedVaultAbi = parseAbi([
   'function hedge(uint256 marketId, bool open, uint256 lots, uint256 limitPrice)',
   'function hedgeSide(uint256 marketId, uint8 side, bool open, uint256 lots, uint256 limitPrice)',
