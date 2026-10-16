@@ -11,7 +11,9 @@
     "start": "node server/index.js",
     "deploy:vault": "node scripts/deploy-vault.mjs",
     "fund:vault": "node scripts/fund-vault.mjs",
-    "open:vault-account": "node scripts/open-vault-account.mjs"
+    "open:vault-account": "node scripts/open-vault-account.mjs",
+    "configure:vault": "node scripts/configure-vault.mjs",
+    "test:vault-order": "node scripts/test-vault-order.mjs"
   },
   "dependencies": {
     "@privy-io/react-auth": "^3.49.0",

@@ -1,416 +1,72 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
-import { ArrowUpRight, Check, KeyRound, LoaderCircle, LockKeyhole, X } from 'lucide-react'
+import { ArrowUpRight, Check, LoaderCircle, ShieldCheck, X } from 'lucide-react'
 
-type Market = {
-  id: number; symbol: string; mark: number; sizeDecimals?: number; priceDecimals?: number; maxLeverage?: number | null; maxSlippageBps?: number
-}
+type Market = { id: number; symbol: string; mark: number; sizeDecimals?: number }
 export type TradeIntent = { direction?: 'long' | 'short'; notional?: string; leverage?: string }
-type PerplAccount = { id: number; forwarding: boolean; lastRequestId: number; balance?: string; equity?: string }
-type Position = { id: number; accountId: number; marketId: number; symbol: string; side: 'long' | 'short'; size: number; entryPrice: number; mark: number; notional: number; leverage: number }
-type PerplFill = { orderId: number; accountId: number; marketId: number; symbol: string; type: number; size: number; price: number; timestamp: number; transaction: { hash: string; blockNumber: string } | null }
 type Props = { market: Market; intent?: TradeIntent; walletAddress: string; onConnect: () => void | Promise<void>; onClose: () => void; onNotice: (message: string) => void }
-type OrderResult = {
-  accepted: boolean; requestId: number; market: string; direction: string; mark: number; size: number; notional: number;
-  leverage: number; estimatedCollateral: number; estimatedTakerFee: number; slippageBps: number;
-  status: null | { code: number; reason: number; filledSize: number; averageFillPrice: number; orderId: number; requestId: number };
-  onchainTransactions?: { hash: string; blockNumber: string }[]
-}
+type Execution = { market: string; notional: number; size: number; transaction: string; perplAccountId: string }
 
-const statusNames: Record<number, string> = { 1: 'Pending', 2: 'Open', 3: 'Partially filled', 4: 'Filled', 5: 'Canceled', 6: 'Expired', 7: 'Could not be placed', 8: 'Waiting for trigger', 9: 'Triggered', 10: 'Executed' }
+const supportedMarkets = new Set([16, 32, 48, 64])
 const money = (value: number) => `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
 
-// Perpl signing credentials are intentionally held only in this running tab.
-// Privy retains the user's GentrY login. Perpl credentials are a separate
-// trading authorization and must not be persisted in browser storage.
-let activePerplSession: { apiKey: string; privateKey: string } | undefined
-
-export function PerplTrader({ market, intent, walletAddress: _walletAddress, onClose, onNotice }: Props) {
-  const [apiKey, setApiKey] = useState(() => activePerplSession?.apiKey || '')
-  const [privateKey, setPrivateKey] = useState(() => activePerplSession?.privateKey || '')
-  const [accounts, setAccounts] = useState<PerplAccount[]>([])
-  const [positions, setPositions] = useState<Position[]>([])
-  const [fills, setFills] = useState<PerplFill[]>([])
-  const [linkedAddress, setLinkedAddress] = useState('')
-  const [accountId, setAccountId] = useState('')
-  const [action, setAction] = useState<'open' | 'close'>('open')
-  const [positionId, setPositionId] = useState('')
-  const [direction, setDirection] = useState<'long' | 'short'>(intent?.direction || 'long')
-  const [notional, setNotional] = useState(intent?.notional || '100')
-  const [leverage, setLeverage] = useState(intent?.leverage || '5')
-  const [busy, setBusy] = useState<'account' | 'order' | null>(null)
+export function PerplTrader({ market, intent, walletAddress, onConnect, onClose, onNotice }: Props) {
+  const [notional, setNotional] = useState(intent?.notional || '10')
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [result, setResult] = useState<OrderResult | null>(null)
-  const maxLeverage = Math.max(1, Math.floor(market.maxLeverage || 50))
-  const selectedPosition = positions.find((position) => String(position.id) === positionId)
+  const [result, setResult] = useState<Execution | null>(null)
+  const [ready, setReady] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let active = true
+    void fetch('/api/vault/status').then((response) => response.json()).then((payload) => { if (active) setReady(Boolean(payload.ready)) }).catch(() => { if (active) setReady(false) })
+    return () => { active = false }
+  }, [])
 
   const estimate = useMemo(() => {
     const amount = Number(notional)
-    const lev = Number(leverage)
-    if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(lev) || lev < 1 || !(market.mark > 0)) return null
-    const size = amount / market.mark
-    const collateral = amount / lev
-    const liqMovePct = Math.min(95, (0.9 / lev) * 100)
-    const estLiquidation = direction === 'long'
-      ? market.mark * (1 - liqMovePct / 100)
-      : market.mark * (1 + liqMovePct / 100)
-    return { size, collateral, liqMovePct, estLiquidation }
-  }, [notional, leverage, market.mark, direction])
+    if (!Number.isFinite(amount) || amount <= 0 || !(market.mark > 0)) return null
+    return { size: amount / market.mark, amount }
+  }, [notional, market.mark])
 
-  // Reconnect only from the active tab session. Nothing is read from localStorage.
-  useEffect(() => {
-    if (!accounts.length) void loadAccount()
-  }, [])
-
-  function forgetCredentials() {
-    setApiKey('')
-    setPrivateKey('')
-    setAccounts([])
-    setPositions([])
-    setLinkedAddress('')
-    setResult(null)
-    activePerplSession = undefined
-    setError('')
-  }
-
-  async function loadAccount(event?: FormEvent) {
-    event?.preventDefault()
-    return linkAccount({ apiKey: apiKey.trim(), privateKey: privateKey.trim() })
-  }
-
-  async function linkAccount(credentials: { apiKey: string; privateKey: string }) {
-    setBusy('account'); setError(''); setAccounts([]); setPositions([]); setFills([])
-    try {
-      const trimmedKey = credentials.apiKey.trim()
-      const trimmedSecret = credentials.privateKey.trim()
-      const response = await fetch('/api/perpl/account', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ apiKey: trimmedKey, privateKey: trimmedSecret }),
-      })
-      const payload = await response.json()
-      if (!response.ok) throw new Error(payload.error || 'Could not link your Perpl account.')
-      const rows = Array.isArray(payload.accounts) ? payload.accounts : []
-      if (!rows.length) throw new Error('No Perpl trading account is linked to this key yet.')
-      setLinkedAddress(String(payload.address || ''))
-      setPositions(Array.isArray(payload.positions) ? payload.positions : [])
-      setFills(Array.isArray(payload.fills) ? payload.fills : [])
-      setAccounts(rows)
-      const selected = rows.find((item: PerplAccount) => item.forwarding)
-      setAccountId(String((selected || rows[0]).id))
-      if (!selected) setError('Account linked. Note: turn on Order Forwarding in Perpl before placing orders.')
-
-      activePerplSession = { apiKey: trimmedKey, privateKey: trimmedSecret }
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Could not link your Perpl account.') }
-    finally { setBusy(null) }
-  }
-
-  async function placeOrder(event: FormEvent) {
+  async function execute(event: FormEvent) {
     event.preventDefault()
-    setBusy('order'); setError(''); setResult(null)
+    setError('')
+    if (!walletAddress) { await onConnect(); return }
+    setBusy(true)
     try {
-      if (!linkedAddress) throw new Error('Link your Perpl account first.')
-      const submittedAt = Date.now()
-      const trimmedKey = apiKey.trim()
-      const trimmedSecret = privateKey.trim()
-      const response = await fetch('/api/perpl/order', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
-        apiKey: trimmedKey, privateKey: trimmedSecret, address: linkedAddress, marketId: market.id, accountId, direction, action, positionId: Number(positionId), notional: Number(notional), leverage: Number(leverage),
-      }) })
+      const response = await fetch('/api/vault/order', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ marketId: market.id, notional: Number(notional) }) })
       const payload = await response.json()
-      if (!response.ok) throw new Error(payload.error || 'Perpl could not place the order.')
-      const acceptedResult = payload as OrderResult
-      setResult(acceptedResult)
-      onNotice(payload.status ? `Perpl order status: ${statusNames[payload.status.code] || 'Updated'}.` : 'Order placed on Perpl. Checking confirmation…')
-
-      void (async () => {
-        for (let attempt = 0; attempt < 15; attempt++) {
-          await new Promise((resolve) => setTimeout(resolve, attempt ? 1200 : 400))
-          const statusResponse = await fetch('/api/perpl/order-status', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ apiKey: trimmedKey, privateKey: trimmedSecret, requestId: acceptedResult.requestId, accountId, marketId: market.id, sizeDecimals: market.sizeDecimals || 0, priceDecimals: market.priceDecimals || 0 }) }).catch(() => null)
-          if (!statusResponse?.ok) continue
-          const statusPayload = await statusResponse.json().catch(() => ({}))
-          if (!statusPayload.status) continue
-          const status = statusPayload.status as NonNullable<OrderResult['status']>
-          setResult((current) => current && current.requestId === acceptedResult.requestId ? { ...current, status } : current)
-          if ([2, 3, 4, 5, 6, 7, 10].includes(status.code)) break
-        }
-      })()
-
-      void (async () => {
-        let recentFills: PerplFill[] = []
-        for (let attempt = 0; attempt < 5 && !recentFills.some((fill) => fill.transaction); attempt++) {
-          if (attempt) await new Promise((resolve) => setTimeout(resolve, 900))
-          const accountResponse = await fetch('/api/perpl/account', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ apiKey: trimmedKey, privateKey: trimmedSecret }) }).catch(() => null)
-          if (!accountResponse?.ok) continue
-          const accountPayload = await accountResponse.json().catch(() => ({}))
-          const expectedType = action === 'close' ? direction === 'long' ? 3 : 4 : direction === 'long' ? 1 : 2
-          recentFills = (Array.isArray(accountPayload.fills) ? accountPayload.fills : []).filter((fill: PerplFill) => fill.accountId === Number(accountId) && fill.marketId === market.id && fill.type === expectedType && fill.timestamp >= submittedAt - 1000 && fill.timestamp <= Date.now() + 1000)
-        }
-        setFills((previous) => [...recentFills, ...previous.filter((fill) => !recentFills.some((recent) => recent.orderId === fill.orderId && recent.timestamp === fill.timestamp))].slice(0, 25))
-        const totalFilled = recentFills.reduce((sum, fill) => sum + fill.size, 0)
-        const averagePrice = totalFilled ? recentFills.reduce((sum, fill) => sum + fill.price * fill.size, 0) / totalFilled : 0
-        const transactions = [...new Map(recentFills.map((fill) => fill.transaction).filter((item): item is NonNullable<PerplFill['transaction']> => Boolean(item)).map((item) => [item.hash, item])).values()]
-        setResult((current) => current && current.requestId === acceptedResult.requestId ? {
-          ...current,
-          status: current.status || (recentFills.length ? { code: totalFilled >= acceptedResult.size ? 4 : 3, reason: 0, filledSize: totalFilled, averageFillPrice: averagePrice, orderId: recentFills[0].orderId, requestId: acceptedResult.requestId } : null),
-          onchainTransactions: transactions.length ? transactions : current.onchainTransactions,
-        } : current)
-      })()
-    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Perpl could not place the order.') }
-    finally { setBusy(null) }
+      if (!response.ok) throw new Error(payload.error || 'Could not execute the managed order.')
+      setResult(payload)
+      onNotice(`${payload.market} order submitted through the GentrY vault.`)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not execute the managed order.')
+    } finally { setBusy(false) }
   }
 
-  const isConnected = accounts.length > 0
-
+  const available = supportedMarkets.has(market.id)
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
     <section className="modal perpl-trader-modal" role="dialog" aria-modal="true" aria-labelledby="trade-title">
-      <button className="close-button" aria-label="Close order panel" disabled={busy !== null} onClick={onClose}><X size={19} /></button>
-      <span className="modal-kicker">PERPL TRADING ENGINE · MONAD TESTNET</span>
-      <h2 id="trade-title">{isConnected ? `Trade ${market.symbol} Perpetual` : 'GentrY Managed Execution'}</h2>
-      <p>
-        {isConnected
-          ? `Execute real-time perpetual orders directly inside GentrY on Monad Testnet.`
-          : `Review a draft, then GentrY’s keeper submits it to Perpl on Monad Testnet. This managed demo uses GentrY’s funded execution account.`}
-      </p>
+      <button className="close-button" aria-label="Close order panel" disabled={busy} onClick={onClose}><X size={19} /></button>
+      <span className="modal-kicker">GENTRY VAULT · PERPL · MONAD TESTNET</span>
+      <h2 id="trade-title">Trade {market.symbol} Perpetual</h2>
+      <p>Review the order, then GentrY submits it through its funded Perpl vault. Your Privy wallet signs you in; no Perpl API key is required.</p>
 
-      {/* When Connected: Show Connected Account Banner */}
-      {isConnected && <div className="perpl-connected-badge">
-        <span><KeyRound size={14} /> GentrY keeper · Account #{accountId} {linkedAddress ? `(${linkedAddress.slice(0, 6)}…${linkedAddress.slice(-4)})` : ''}</span>
-        <button type="button" onClick={forgetCredentials}>Disconnect key</button>
-      </div>}
-
-      {/* Screen 1: One-Time Connection Form if Not Connected */}
-      {!isConnected && <>
-        <div className="perpl-connect-guide">
-          <p>Set up your Perpl account:</p>
-          <ol>
-            <li>Open your <a href="https://testnet.perpl.xyz/apikeys" target="_blank" rel="noreferrer">Perpl Account Settings <ArrowUpRight size={11} style={{ display: 'inline' }} /></a> in a new tab.</li>
-            <li>Deposit USDC in Perpl to activate your trading account, then enable <strong>One-Click Trading</strong>.</li>
-            <li>Connect GentrY’s funded execution account below, or use a Perpl API key you already enrolled.</li>
-          </ol>
-        </div>
-
-        <div className="perpl-privacy">
-          <LockKeyhole size={15} />
-          <span>Privy identifies your GentrY session. Review each order here before GentrY sends it to Perpl.</span>
-        </div>
-        <button className="primary-button wide" type="button" disabled={busy !== null} onClick={() => void loadAccount()}>
-          {busy === 'account' ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
-          {busy === 'account' ? 'Connecting to Perpl…' : 'Connect GentrY execution account'}
-        </button>
-        <p className="perpl-divider"><span>or connect a personal Perpl API key</span></p>
-
-        <form className="perpl-link-form" onSubmit={(event) => void loadAccount(event)}>
-          <label htmlFor="perpl-api-key">Perpl API key</label>
-          <input
-            id="perpl-api-key"
-            autoComplete="off"
-            value={apiKey}
-            onChange={(event) => setApiKey(event.target.value)}
-            placeholder="Paste your Perpl API key"
-            required
-          />
-
-          <label htmlFor="perpl-signing-key">Perpl signing key (private key)</label>
-          <input
-            id="perpl-signing-key"
-            type="password"
-            autoComplete="new-password"
-            value={privateKey}
-            onChange={(event) => setPrivateKey(event.target.value)}
-            placeholder="Paste your 32-byte signing key"
-            required
-          />
-
-          <div className="perpl-privacy">
-            <LockKeyhole size={15} />
-            <span>Used only to sign orders from this tab. Your GentrY login remains connected through Privy; the Perpl signing key is never written to browser storage.</span>
-          </div>
-
-          <button className="primary-button wide" disabled={busy !== null || !apiKey.trim() || !privateKey.trim()}>
-            {busy === 'account' ? <LoaderCircle className="spin" size={16} /> : <KeyRound size={16} />}
-            {busy === 'account' ? 'Connecting to Perpl…' : 'Connect & Start Trading'}
-          </button>
+      {!result && <>
+        <div className="perpl-privacy"><ShieldCheck size={15} /><span>Vault account is funded in test AUSD and each order stays inside its onchain market cap.</span></div>
+        {!available && <div className="perpl-inline-error">This market is not enabled in the managed vault yet. Choose BTC, ETH, SOL, or MON.</div>}
+        {ready === false && <div className="perpl-inline-error">Managed execution is reconnecting. Try again shortly.</div>}
+        <form className="perpl-order-form" onSubmit={(event) => void execute(event)}>
+          <div className="trade-direction"><button type="button" className="active long">Buy / Long</button></div>
+          <div className="trade-fields"><label htmlFor="trade-notional">Order value (AUSD)<input id="trade-notional" type="number" min="0.01" max="100" step="any" inputMode="decimal" value={notional} onChange={(event) => setNotional(event.target.value)} required /><div className="trade-preset-pills">{['5', '10', '25', '50', '100'].map((value) => <button type="button" key={value} onClick={() => setNotional(value)}>${value}</button>)}</div></label></div>
+          <div className="order-review"><div><span>Market</span><strong>{market.symbol} Perpetual</strong></div><div><span>Mark price</span><strong>{money(market.mark)}</strong></div><div><span>Approx. size</span><strong>{estimate ? `${estimate.size.toFixed(market.sizeDecimals ?? 4)} ${market.symbol}` : '—'}</strong></div><div><span>Execution account</span><strong>GentrY vault</strong></div></div>
+          <button className="primary-button wide" disabled={busy || !available || ready !== true || !estimate}>{busy ? <><LoaderCircle className="spin" size={16} />Submitting on Monad…</> : 'Execute protected order'}</button>
         </form>
       </>}
 
-      {/* Screen 2: Live In-App Trading Terminal */}
-      {isConnected && !result && <form className="perpl-order-form" onSubmit={(event) => void placeOrder(event)}>
-        {accounts.length > 1 && <>
-          <label htmlFor="perpl-account">Perpl Trading Account</label>
-          <select id="perpl-account" value={accountId} onChange={(event) => setAccountId(event.target.value)}>
-            {accounts.map((account) => (
-              <option key={account.id} value={account.id}>
-                Account {account.id}{account.forwarding ? '' : ' · forwarding off'}
-              </option>
-            ))}
-          </select>
-        </>}
-
-        {!accounts.find((account) => String(account.id) === accountId)?.forwarding && (
-          <div className="perpl-privacy">Order Forwarding is off in Perpl. Turn it on in Perpl settings to execute trades.</div>
-        )}
-
-        <div className="trade-direction">
-          <button type="button" className={action === 'open' ? 'active long' : ''} onClick={() => setAction('open')}>Open position</button>
-          <button type="button" className={action === 'close' ? 'active short' : ''} onClick={() => setAction('close')}>Close position</button>
-        </div>
-
-        {action === 'close' && <>
-          {positions.filter((position) => position.accountId === Number(accountId) && position.marketId === market.id).length > 0 ? <>
-            <label htmlFor="perpl-position">Select Open {market.symbol} Position</label>
-            <select
-              id="perpl-position"
-              value={positionId}
-              onChange={(event) => {
-                const value = event.target.value
-                setPositionId(value)
-                const position = positions.find((item) => String(item.id) === value)
-                if (position) {
-                  setDirection(position.side)
-                  setNotional(position.notional.toFixed(2))
-                  setLeverage(String(Math.max(1, Math.floor(position.leverage))))
-                }
-              }}
-            >
-              <option value="">Choose open position…</option>
-              {positions.filter((position) => position.accountId === Number(accountId) && position.marketId === market.id).map((position) => (
-                <option key={position.id} value={position.id}>
-                  {position.side === 'long' ? 'Long' : 'Short'} · {position.size.toFixed(market.sizeDecimals ?? 4)} {market.symbol} · {money(position.notional)}
-                </option>
-              ))}
-            </select>
-          </> : <div className="perpl-privacy">No open {market.symbol} position was found for this account.</div>}
-        </>}
-
-        {action === 'open' && (
-          <div className="trade-direction">
-            <button type="button" className={direction === 'long' ? 'active long' : ''} onClick={() => setDirection('long')}>Buy / Long</button>
-            <button type="button" className={direction === 'short' ? 'active short' : ''} onClick={() => setDirection('short')}>Sell / Short</button>
-          </div>
-        )}
-
-        <div className="trade-fields">
-          <label htmlFor="trade-notional">
-            {action === 'close' ? 'Close Value (USD)' : 'Order Value (USD)'}
-            <input
-              id="trade-notional"
-              type="number"
-              min="0.01"
-              max={action === 'close' ? selectedPosition?.notional : undefined}
-              step="any"
-              inputMode="decimal"
-              value={notional}
-              onChange={(event) => setNotional(event.target.value)}
-              placeholder="e.g. 100"
-              required
-            />
-            {action === 'open' && <div className="trade-preset-pills">
-              {['25', '50', '100', '250', '500'].map((val) => (
-                <button type="button" key={val} onClick={() => setNotional(val)}>${val}</button>
-              ))}
-            </div>}
-          </label>
-          <label htmlFor="trade-leverage">
-            Leverage
-            <select id="trade-leverage" value={leverage} onChange={(event) => setLeverage(event.target.value)}>
-              {Array.from({ length: maxLeverage }, (_, i) => i + 1).filter((v) => v <= 10 || v % 5 === 0).map((value) => (
-                <option key={value} value={value}>{value}×</option>
-              ))}
-            </select>
-          </label>
-        </div>
-
-        <div className="order-review">
-          <div><span>Market</span><strong>{market.symbol} Perpetual</strong></div>
-          <div><span>Mark price</span><strong>{money(market.mark)}</strong></div>
-          <div><span>Approx. size</span><strong>{estimate ? `${estimate.size.toFixed(market.sizeDecimals ?? 4)} ${market.symbol}` : '—'}</strong></div>
-          <div><span>Required collateral</span><strong>{estimate ? money(estimate.collateral) : '—'}</strong></div>
-          <div><span>Est. liquidation</span><strong>{estimate ? `~${estimate.liqMovePct.toFixed(1)}% move (${money(estimate.estLiquidation)})` : '—'}</strong></div>
-          <div><span>Max slippage limit</span><strong>{market.maxSlippageBps ?? 50} bps</strong></div>
-        </div>
-
-        <button
-          className="primary-button wide"
-          disabled={busy !== null || !estimate || !accountId || !accounts.find((account) => String(account.id) === accountId)?.forwarding || (action === 'close' && !positionId)}
-        >
-          {busy === 'order' ? <LoaderCircle className="spin" size={16} /> : null}
-          {busy === 'order'
-            ? 'Placing order on Perpl…'
-            : action === 'close'
-            ? `Close ${direction} position`
-            : `Place ${direction === 'long' ? 'Buy / Long' : 'Sell / Short'} Order`}
-        </button>
-      </form>}
-
-      {/* Screen 3: Order Fill Result & Onchain Proof */}
-      {result && <div className="order-result">
-        <div className="success-icon"><Check size={22} /></div>
-        <h3>{result.status ? statusNames[result.status.code] || 'Order updated' : 'Order submitted'}</h3>
-        <p>{result.status ? `${result.status.filledSize} ${result.market} filled at ${money(result.status.averageFillPrice)}.` : 'Perpl received your order. Checking confirmation on Monad.'}</p>
-        <div className="order-review">
-          <div><span>Request number</span><strong>#{result.requestId}</strong></div>
-          <div><span>Order value</span><strong>{money(result.notional)}</strong></div>
-          <div><span>Estimated fee</span><strong>{money(result.estimatedTakerFee)}</strong></div>
-          <div><span>Leverage</span><strong>{result.leverage}×</strong></div>
-        </div>
-        {result.onchainTransactions?.length ? (
-          <div className="perpl-tx-proof">
-            <strong>Confirmed on Monad Testnet</strong>
-            {result.onchainTransactions.map((transaction) => (
-              <a key={transaction.hash} href={`https://testnet.monadscan.com/tx/${transaction.hash}`} target="_blank" rel="noreferrer">
-                View transaction · block {Number(transaction.blockNumber).toLocaleString()} <ArrowUpRight size={14} />
-              </a>
-            ))}
-          </div>
-        ) : null}
-        <button className="primary-button wide" onClick={() => setResult(null)}>Trade again</button>
-        <button className="secondary-button wide" onClick={onClose}>Done</button>
-      </div>}
-
-      {/* Open Positions List */}
-      {isConnected && positions.length > 0 && !result && (
-        <div className="perpl-recent-fills" style={{ marginTop: 14 }}>
-          <strong>Your Open Positions</strong>
-          {positions.map((pos) => (
-            <div className="perpl-recent-fill" key={pos.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <span>{pos.symbol} · {pos.side.toUpperCase()} · {pos.size.toFixed(4)} @ {money(pos.entryPrice)}</span>
-              <button
-                type="button"
-                className="text-button"
-                style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent)', cursor: 'pointer' }}
-                onClick={() => {
-                  setAction('close')
-                  setPositionId(String(pos.id))
-                  setDirection(pos.side)
-                  setNotional(pos.notional.toFixed(2))
-                  setLeverage(String(Math.max(1, Math.floor(pos.leverage))))
-                }}
-              >
-                Close
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Recent Fills List */}
-      {fills.length > 0 && !result && (
-        <div className="perpl-recent-fills">
-          <strong>GentrY Execution History</strong>
-          {fills.slice(0, 3).map((fill) => (
-            <div className="perpl-recent-fill" key={`${fill.orderId}-${fill.timestamp}`}>
-              <span className="perpl-fill-summary">{fill.symbol} · {fill.type === 1 || fill.type === 3 ? 'Long' : 'Short'} · {Number(fill.size).toFixed(5)} @ {money(fill.price)}</span>
-              {fill.transaction ? (
-                <a href={`https://testnet.monadscan.com/tx/${fill.transaction.hash}`} target="_blank" rel="noreferrer">
-                  Confirmed on Monad <ArrowUpRight size={13} />
-                </a>
-              ) : <span className="perpl-fill-status">Verifying on Monad…</span>}
-            </div>
-          ))}
-        </div>
-      )}
-
+      {result && <div className="order-result"><div className="success-icon"><Check size={22} /></div><h3>Order submitted</h3><p>{result.size.toFixed(market.sizeDecimals ?? 4)} {result.market} was submitted from the GentrY vault.</p><div className="order-review"><div><span>Order value</span><strong>{money(result.notional)}</strong></div><div><span>Perpl account</span><strong>#{result.perplAccountId}</strong></div></div><div className="perpl-tx-proof"><strong>Confirmed on Monad Testnet</strong><a href={`https://testnet.monadscan.com/tx/${result.transaction}`} target="_blank" rel="noreferrer">View transaction <ArrowUpRight size={14} /></a></div><button className="primary-button wide" onClick={() => setResult(null)}>Trade again</button><button className="secondary-button wide" onClick={onClose}>Done</button></div>}
       {error && <div className="perpl-inline-error" role="alert">{error}</div>}
-      <p className="perpl-network-note">Monad Testnet · Trades are executed directly via Perpl's offchain orderbook with onchain settlement.</p>
+      <p className="perpl-network-note">Monad Testnet · Perpl orderbook execution with onchain settlement.</p>
     </section>
   </div>
 }

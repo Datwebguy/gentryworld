@@ -5,7 +5,8 @@ import { createHash, createPrivateKey, randomBytes, sign as signEd25519 } from '
 import { ExactEvmScheme } from '@x402/evm/exact/server'
 import { HTTPFacilitatorClient, x402ResourceServer } from '@x402/core/server'
 import { paymentMiddleware } from '@x402/express'
-import { createPublicClient, formatEther, formatUnits, http, isAddress, parseAbi, parseUnits } from 'viem'
+import { createPublicClient, createWalletClient, formatEther, formatUnits, http, isAddress, parseAbi, parseUnits } from 'viem'
+import { privateKeyToAccount } from 'viem/accounts'
 import { fileURLToPath } from 'node:url'
 
 const app = express()
@@ -54,6 +55,20 @@ async function pacedRpcFetch(input, init) {
   return fetch(input, init)
 }
 const publicClient = createPublicClient({ chain: monad, transport: http(rpcUrl, { fetchFn: pacedRpcFetch, retryCount: 2, retryDelay: 700 }) })
+const managedVaultAddress = /^0x[a-f\d]{40}$/i.test(process.env.VAULT_ADDRESS || '') ? process.env.VAULT_ADDRESS : ''
+const managedVaultAbi = parseAbi([
+  'function hedge(uint256 marketId, bool open, uint256 lots, uint256 limitPrice)',
+  'function maxHedgeLots(uint256 marketId) view returns (uint256)',
+  'function perplAccountId() view returns (uint256)',
+])
+
+function managedVaultWallet() {
+  const raw = String(process.env.KEEPER_PRIVATE_KEY || '').trim().replace(/^['"]|['"]$/g, '')
+  const key = raw.startsWith('0x') ? raw : `0x${raw}`
+  if (!/^0x[a-f\d]{64}$/i.test(key)) throw new Error('Managed execution is not configured.')
+  const account = privateKeyToAccount(key)
+  return createWalletClient({ account, chain: monad, transport: http(rpcUrl) })
+}
 
 function generateMarketAnalysisFallback(market, snapshot) {
   const symbol = market.symbol || 'the market'
@@ -483,6 +498,51 @@ app.post('/api/perpl/order-status', async (req, res) => {
     } })
   } catch {
     res.status(400).json({ error: 'Could not read the Perpl order status.' })
+  }
+})
+
+app.get('/api/vault/status', async (_req, res) => {
+  try {
+    if (!managedVaultAddress) return res.status(503).json({ error: 'Managed execution is being initialized.' })
+    const accountId = await publicClient.readContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'perplAccountId' })
+    res.json({ ready: accountId > 0n, vault: managedVaultAddress, perplAccountId: accountId.toString(), network: 'Monad Testnet' })
+  } catch {
+    res.status(503).json({ error: 'Managed execution is temporarily unavailable.' })
+  }
+})
+
+app.post('/api/vault/order', async (req, res) => {
+  try {
+    if (!managedVaultAddress) return res.status(503).json({ error: 'Managed execution is being initialized.' })
+    const marketId = Number(req.body?.marketId)
+    const notional = Number(req.body?.notional)
+    if (![16, 32, 48, 64].includes(marketId) || !Number.isFinite(notional) || notional <= 0 || notional > 100) {
+      return res.status(400).json({ error: 'Choose a supported market and an order value up to $100.' })
+    }
+    const contextResponse = await fetch('https://testnet.perpl.xyz/api/v1/pub/context', { signal: AbortSignal.timeout(8000) })
+    if (!contextResponse.ok) throw new Error('Market context unavailable')
+    const context = await contextResponse.json()
+    const market = context.markets?.find((item) => Number(item.id) === marketId && item.config?.is_open)
+    const priceDecimals = Number(market?.config?.price_decimals || 0)
+    const sizeDecimals = Number(market?.config?.size_decimals || 0)
+    const markRaw = BigInt(market?.state?.orl || 0)
+    const mark = Number(markRaw) / (10 ** priceDecimals)
+    if (!market || !(mark > 0) || markRaw === 0n) return res.status(503).json({ error: 'A current Perpl price is unavailable.' })
+    const lots = BigInt(Math.floor((notional / mark) * (10 ** sizeDecimals)))
+    if (lots <= 0n) return res.status(400).json({ error: 'That order is below this market’s supported size.' })
+    const [accountId, cap] = await Promise.all([
+      publicClient.readContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'perplAccountId' }),
+      publicClient.readContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'maxHedgeLots', args: [BigInt(marketId)] }),
+    ])
+    if (accountId === 0n) return res.status(503).json({ error: 'The managed Perpl account is not ready.' })
+    if (cap === 0n || lots > cap) return res.status(400).json({ error: 'This order exceeds the current managed risk cap.' })
+    const wallet = managedVaultWallet()
+    const hash = await wallet.writeContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'hedge', args: [BigInt(marketId), true, lots, markRaw] })
+    const receipt = await publicClient.waitForTransactionReceipt({ hash })
+    if (receipt.status !== 'success') throw new Error('Transaction reverted')
+    res.json({ accepted: true, market: market.symbol, notional: Number((Number(lots) / (10 ** sizeDecimals) * mark).toFixed(6)), size: Number(lots) / (10 ** sizeDecimals), transaction: hash, vault: managedVaultAddress, perplAccountId: accountId.toString() })
+  } catch {
+    res.status(502).json({ error: 'Perpl could not execute this managed order.' })
   }
 })
 
