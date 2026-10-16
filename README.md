@@ -77,7 +77,7 @@ flowchart LR
 | Market data and execution | **Perpl + GentrY managed vault** | Current perpetual market context and bounded, keeper-submitted Testnet orders. |
 | Agent identity and reputation | **ERC-8004** | Registered agent profiles and on-chain feedback. |
 | Paid services | **x402** | Wallet-approved USDC payment for a listed agent request. |
-| Research | **OpenAI Responses API** | Explains a supplied market snapshot and the user's question in conversational language. |
+| Research | **OpenAI API** | Explains a supplied market snapshot and the user's question in conversational language. |
 | Wallet | **Privy, viem** | Embedded wallet onboarding, external wallet connection, short lived order approvals, and on-chain actions. |
 | Application | **React, TypeScript, Vite, Express** | Browser experience and the server endpoints that connect the services. |
 
