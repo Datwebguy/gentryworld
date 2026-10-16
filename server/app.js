@@ -184,10 +184,25 @@ async function signedPerplRequest(credentials, method, target, body = '') {
 // material: the browser creates that key pair and signs the proof of possession.
 async function proxyPerplEnrollment(req, res, endpoint) {
   try {
+    const input = req.body && typeof req.body === 'object' ? req.body : {}
+    const payloadBody = {
+      chain_id: Number(input.chain_id),
+      address: typeof input.address === 'string' ? input.address.trim() : '',
+      public_key: typeof input.public_key === 'string' ? input.public_key.trim().toLowerCase() : '',
+      scope_mask: Number(input.scope_mask),
+      label: typeof input.label === 'string' ? input.label.trim().slice(0, 80) : 'GentrY trading session',
+      expires_at: Number(input.expires_at || 0),
+    }
+    const invalidPayload = payloadBody.chain_id !== 10143 || !/^0x[a-f\d]{40}$/i.test(payloadBody.address) || !/^0x[a-f\d]{64}$/.test(payloadBody.public_key) || ![1, 2, 3].includes(payloadBody.scope_mask)
+    const invalidEnroll = Number(input.chain_id) !== 10143 || !/^0x[a-f\d]{40}$/i.test(String(input.address || '')) || !input.typed_data || typeof input.mac !== 'string' || typeof input.signature !== 'string' || typeof input.pop_signature !== 'string'
+    if ((endpoint === 'payload' && invalidPayload) || (endpoint === 'enroll' && invalidEnroll)) {
+      return res.status(400).json({ error: 'Perpl pairing payload is incomplete. Reconnect the Privy wallet and try again.' })
+    }
+    const body = endpoint === 'payload' ? payloadBody : input
     const upstream = await fetch(`https://testnet.perpl.xyz/api/v1/api-key/${endpoint}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(req.body || {}),
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(10_000),
     })
     const text = await upstream.text()
