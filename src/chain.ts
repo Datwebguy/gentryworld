@@ -191,3 +191,22 @@ export async function registerAgent(uri: string, provider?: Eip1193Provider | nu
   await publicClient.waitForTransactionReceipt({ hash })
   return hash
 }
+
+export const ausdAddress = '0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC' as Address
+export const managedVaultAddress = '0x6b60d6c57a0a50939f8a3507c953a856796e6fb3' as Address
+
+export const ausdAbi = parseAbi([
+  'function balanceOf(address account) view returns (uint256)',
+  'function allowance(address owner, address spender) view returns (uint256)',
+  'function approve(address spender, uint256 amount) returns (bool)',
+  'function transfer(address to, uint256 amount) returns (bool)',
+  'function transferFrom(address from, address to, uint256 amount) returns (bool)',
+])
+
+export const vaultAbi = parseAbi([
+  'function totalAssets() view returns (uint256)',
+  'function totalShares() view returns (uint256)',
+  'function shares(address account) view returns (uint256)',
+  'function deposit(uint256 assets) returns (uint256)',
+  'function withdraw(uint256 shareAmount) returns (uint256)',
+])

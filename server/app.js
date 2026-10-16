@@ -57,19 +57,29 @@ async function pacedRpcFetch(input, init) {
   return fetch(input, init)
 }
 const publicClient = createPublicClient({ chain: monad, transport: http(rpcUrl, { fetchFn: pacedRpcFetch, retryCount: 2, retryDelay: 700 }) })
-const upgradedVaultAddress = '0x36838e1c1c091f18f8519104ee3c6d3aa5b7a660'
+const upgradedVaultAddress = '0x6b60d6c57a0a50939f8a3507c953a856796e6fb3'
 const managedVaultAddress = upgradedVaultAddress
 const managedVaultAbi = parseAbi([
   'function hedge(uint256 marketId, bool open, uint256 lots, uint256 limitPrice)',
   'function hedgeSide(uint256 marketId, uint8 side, bool open, uint256 lots, uint256 limitPrice)',
   'function maxHedgeLots(uint256 marketId) view returns (uint256)',
   'function perplAccountId() view returns (uint256)',
+  'function deposit(uint256 assets) returns (uint256)',
+  'function withdraw(uint256 shareAmount) returns (uint256)',
+  'function payout(address to, uint256 amount)',
+  'function shares(address account) view returns (uint256)',
+  'function totalShares() view returns (uint256)',
+  'function totalAssets() view returns (uint256)',
+  'event Deposit(address indexed user, uint256 assets, uint256 sharesMinted)',
+  'event Withdraw(address indexed user, uint256 assets, uint256 sharesBurned)',
+  'event Payout(address indexed to, uint256 amount)',
 ])
 const consumedManagedOrderNonces = new Map()
 
 const dataDir = fileURLToPath(new URL('./data', import.meta.url))
 try { if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true }) } catch { /* Ignore */ }
 const positionsFilePath = path.join(dataDir, 'vault-positions.json')
+const balancesFilePath = path.join(dataDir, 'vault-balances.json')
 
 function loadPositions() {
   try {
@@ -88,6 +98,89 @@ function savePositions() {
     fs.writeFileSync(positionsFilePath, JSON.stringify(storedPositions, null, 2), 'utf8')
   } catch (err) {
     console.error('Failed to save vault positions:', err)
+  }
+}
+
+function loadBalances() {
+  try {
+    if (fs.existsSync(balancesFilePath)) {
+      const data = JSON.parse(fs.readFileSync(balancesFilePath, 'utf8'))
+      if (typeof data === 'object' && data !== null) return data
+    }
+  } catch { /* Fallback */ }
+  return {}
+}
+
+let storedBalances = loadBalances()
+
+function saveBalances() {
+  try {
+    fs.writeFileSync(balancesFilePath, JSON.stringify(storedBalances, null, 2), 'utf8')
+  } catch (err) {
+    console.error('Failed to save vault balances:', err)
+  }
+}
+
+function getUserAccount(address) {
+  const norm = address.toLowerCase().trim()
+  if (!storedBalances[norm]) {
+    storedBalances[norm] = {
+      address: norm,
+      deposited: 0,
+      withdrawn: 0,
+      realizedPnl: 0,
+      history: []
+    }
+  }
+  return storedBalances[norm]
+}
+
+async function getUserVaultBalanceWithOnchain(address) {
+  const norm = address.toLowerCase().trim()
+  const acc = getUserAccount(norm)
+
+  // Sync on-chain shares if user deposited on-chain
+  try {
+    if (managedVaultAddress) {
+      const onchainShares = await publicClient.readContract({
+        address: managedVaultAddress,
+        abi: managedVaultAbi,
+        functionName: 'shares',
+        args: [norm]
+      })
+      const sharesNum = Number(formatUnits(onchainShares, 6))
+      if (sharesNum > (acc.deposited || 0)) {
+        acc.deposited = Number(sharesNum.toFixed(4))
+        saveBalances()
+      }
+    }
+  } catch { /* Fallback */ }
+
+  const openPositions = storedPositions.filter((p) => p.address?.toLowerCase() === norm && p.status === 'open')
+  let lockedMargin = 0
+  for (const pos of openPositions) {
+    const lev = Number(pos.leverage || 10)
+    const margin = Number(pos.initialMargin || (pos.notional / lev) || 0)
+    lockedMargin += margin
+  }
+
+  const deposited = Number(acc.deposited || 0)
+  const withdrawn = Number(acc.withdrawn || 0)
+  const realizedPnl = Number(acc.realizedPnl || 0)
+
+  const totalBalance = Math.max(0, Number((deposited + realizedPnl - withdrawn).toFixed(4)))
+  const availableBalance = Math.max(0, Number((totalBalance - lockedMargin).toFixed(4)))
+
+  return {
+    address: norm,
+    deposited: Number(deposited.toFixed(4)),
+    withdrawn: Number(withdrawn.toFixed(4)),
+    realizedPnl: Number(realizedPnl.toFixed(4)),
+    totalBalance,
+    lockedMargin: Number(lockedMargin.toFixed(4)),
+    availableBalance,
+    vaultAddress: managedVaultAddress,
+    openPositionsCount: openPositions.length
   }
 }
 
@@ -629,13 +722,23 @@ app.post('/api/vault/order', async (req, res) => {
       const maximumNotional = Number(cap) / (10 ** sizeDecimals) * mark
       return res.status(400).json({ error: `This order exceeds the current managed cap of $${maximumNotional.toFixed(2)}.` })
     }
+    const leverage = Math.max(1, Math.min(50, Number(req.body?.leverage || 10)))
+    const calculatedNotional = Number((Number(lots) / (10 ** sizeDecimals) * mark).toFixed(4))
+    const initialMargin = Number((calculatedNotional / leverage).toFixed(4))
+
+    const userBal = await getUserVaultBalanceWithOnchain(address)
+    if (userBal.availableBalance < initialMargin) {
+      return res.status(400).json({
+        error: `Insufficient available vault margin ($${userBal.availableBalance.toFixed(2)}). You need $${initialMargin.toFixed(2)} margin for this trade. Please deposit AUSD into your GentrY vault.`
+      })
+    }
+
     const sideParam = side === 'long' ? 1 : 0
     const wallet = managedVaultWallet()
     const hash = await wallet.writeContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'hedgeSide', args: [BigInt(marketId), sideParam, true, lots, markRaw] })
     const receipt = await publicClient.waitForTransactionReceipt({ hash })
     if (receipt.status !== 'success') throw new Error('Transaction reverted')
 
-    const leverage = Math.max(1, Math.min(50, Number(req.body?.leverage || 10)))
     const position = {
       id: `pos_${Date.now()}_${randomBytes(4).toString('hex')}`,
       address: address.toLowerCase(),
@@ -645,8 +748,8 @@ app.post('/api/vault/order', async (req, res) => {
       leverage,
       size: Number(lots) / (10 ** sizeDecimals),
       lots: lots.toString(),
-      notional: Number((Number(lots) / (10 ** sizeDecimals) * mark).toFixed(4)),
-      initialMargin: Number(((Number(lots) / (10 ** sizeDecimals) * mark) / leverage).toFixed(4)),
+      notional: calculatedNotional,
+      initialMargin,
       entryPrice: mark,
       openedAt: Date.now(),
       transaction: hash,
@@ -827,6 +930,20 @@ app.post('/api/vault/close', async (req, res) => {
     }
     savePositions()
 
+    const acc = getUserAccount(address)
+    acc.realizedPnl = Number(((acc.realizedPnl || 0) + realizedPnl).toFixed(4))
+    acc.history.push({
+      type: 'pnl_settle',
+      positionId: pos.id,
+      symbol: pos.symbol,
+      side: pos.side,
+      realizedPnl: Number(realizedPnl.toFixed(4)),
+      timestamp: Date.now()
+    })
+    saveBalances()
+
+    const updatedBal = await getUserVaultBalanceWithOnchain(address)
+
     res.json({
       accepted: true,
       closed: true,
@@ -836,10 +953,156 @@ app.post('/api/vault/close', async (req, res) => {
       realizedRoePct: Number(roePct.toFixed(2)),
       closePrice: mark,
       transaction: hash,
+      balance: updatedBal,
     })
   } catch (err) {
     console.error('Failed to close managed position:', err)
     const msg = err instanceof Error ? err.message : 'Perpl could not close this managed position.'
+    res.status(502).json({ error: msg.includes('revert') ? 'Transaction reverted on Monad Testnet.' : msg })
+  }
+})
+
+app.get('/api/vault/user-balance', async (req, res) => {
+  try {
+    const address = String(req.query?.address || '').toLowerCase().trim()
+    if (!isAddress(address)) return res.status(400).json({ error: 'Valid EVM address required.' })
+
+    const bal = await getUserVaultBalanceWithOnchain(address)
+    res.json(bal)
+  } catch (err) {
+    console.error('User balance error:', err)
+    res.status(500).json({ error: 'Could not fetch user vault balance.' })
+  }
+})
+
+app.post('/api/vault/deposit', async (req, res) => {
+  try {
+    if (!managedVaultAddress) return res.status(503).json({ error: 'Managed execution is being initialized.' })
+    const address = String(req.body?.address || '').toLowerCase().trim()
+    const txHash = String(req.body?.txHash || '').trim()
+
+    if (!isAddress(address) || !/^0x[a-f\d]{64}$/i.test(txHash)) {
+      return res.status(400).json({ error: 'Valid wallet address and transaction hash required.' })
+    }
+
+    const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash })
+    if (receipt.status !== 'success') {
+      return res.status(400).json({ error: 'Deposit transaction did not succeed on Monad Testnet.' })
+    }
+
+    // Read onchain shares for this user
+    const onchainShares = await publicClient.readContract({
+      address: managedVaultAddress,
+      abi: managedVaultAbi,
+      functionName: 'shares',
+      args: [address]
+    })
+    const sharesAmount = Number(formatUnits(onchainShares, 6))
+
+    const acc = getUserAccount(address)
+    if (sharesAmount > acc.deposited) {
+      const delta = sharesAmount - acc.deposited
+      acc.deposited = Number(sharesAmount.toFixed(4))
+      acc.history.push({
+        type: 'deposit',
+        amount: Number(delta.toFixed(4)),
+        txHash,
+        timestamp: Date.now()
+      })
+      saveBalances()
+    }
+
+    const bal = await getUserVaultBalanceWithOnchain(address)
+    res.json({
+      success: true,
+      deposited: sharesAmount,
+      balance: bal,
+      transaction: txHash
+    })
+  } catch (err) {
+    console.error('Deposit notification error:', err)
+    res.status(500).json({ error: 'Could not verify deposit transaction.' })
+  }
+})
+
+app.post('/api/vault/withdraw', async (req, res) => {
+  try {
+    if (!managedVaultAddress) return res.status(503).json({ error: 'Managed execution is being initialized.' })
+    const address = String(req.body?.address || '').toLowerCase().trim()
+    const amount = Number(req.body?.amount)
+    const nonce = String(req.body?.nonce || '').trim()
+    const issuedAt = Number(req.body?.issuedAt)
+    const signature = String(req.body?.signature || '').trim()
+
+    if (!isAddress(address) || !Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ error: 'Enter a valid withdrawal amount.' })
+    }
+    if (!/^[a-zA-Z0-9_-]{16,100}$/.test(nonce) || !Number.isInteger(issuedAt) || Math.abs(Date.now() - issuedAt) > 5 * 60_000 || !/^0x[a-f\d]{130}$/i.test(signature)) {
+      return res.status(401).json({ error: 'Approve this withdrawal with your Privy wallet.' })
+    }
+
+    const orderKey = `withdraw:${address}:${nonce}`
+    if (consumedManagedOrderNonces.has(orderKey)) return res.status(409).json({ error: 'That withdrawal approval has already been used.' })
+
+    const message = `GentrY Testnet vault withdrawal\nWallet: ${address}\nAmount: ${amount}\nIssued at: ${issuedAt}\nNonce: ${nonce}`
+    const authorized = await verifyMessage({ address, message, signature })
+    if (!authorized) return res.status(401).json({ error: 'The wallet approval could not be verified.' })
+
+    consumedManagedOrderNonces.set(orderKey, Date.now())
+    for (const [key, createdAt] of consumedManagedOrderNonces) if (Date.now() - createdAt > 15 * 60_000) consumedManagedOrderNonces.delete(key)
+
+    const bal = await getUserVaultBalanceWithOnchain(address)
+    if (amount > bal.availableBalance) {
+      return res.status(400).json({ error: `Withdrawal amount ($${amount.toFixed(2)}) exceeds your available balance ($${bal.availableBalance.toFixed(2)}).` })
+    }
+
+    const ausdAddress = '0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC'
+    const erc20Abi = parseAbi(['function balanceOf(address account) view returns (uint256)'])
+    const amountUnits = parseUnits(amount.toFixed(6), 6)
+
+    const freeAssets = await publicClient.readContract({ address: ausdAddress, abi: erc20Abi, functionName: 'balanceOf', args: [managedVaultAddress] })
+    const wallet = managedVaultWallet()
+
+    // If vault does not have enough idle AUSD, defund from Perpl
+    if (freeAssets < amountUnits) {
+      const needed = amountUnits - freeAssets + parseUnits('50', 6)
+      try {
+        const defundHash = await wallet.writeContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'defundPerpl', args: [needed] })
+        await publicClient.waitForTransactionReceipt({ hash: defundHash })
+      } catch (err) {
+        console.error('Defund Perpl error:', err)
+      }
+    }
+
+    const hash = await wallet.writeContract({
+      address: managedVaultAddress,
+      abi: managedVaultAbi,
+      functionName: 'payout',
+      args: [address, amountUnits]
+    })
+    const receipt = await publicClient.waitForTransactionReceipt({ hash })
+    if (receipt.status !== 'success') throw new Error('Payout transaction reverted on Monad Testnet.')
+
+    const acc = getUserAccount(address)
+    acc.withdrawn = Number(((acc.withdrawn || 0) + amount).toFixed(4))
+    acc.history.push({
+      type: 'withdraw',
+      amount,
+      txHash: hash,
+      timestamp: Date.now()
+    })
+    saveBalances()
+
+    const updatedBal = await getUserVaultBalanceWithOnchain(address)
+    res.json({
+      success: true,
+      withdrawn: amount,
+      transaction: hash,
+      balance: updatedBal
+    })
+  } catch (err) {
+    console.error('Vault withdraw error:', err)
+    const msg = err instanceof Error ? err.message : 'Could not process withdrawal.'
     res.status(502).json({ error: msg.includes('revert') ? 'Transaction reverted on Monad Testnet.' : msg })
   }
 })

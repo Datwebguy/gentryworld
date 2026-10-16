@@ -72,6 +72,8 @@ contract GentryManagedVault {
         keeper = keeper_;
     }
 
+    event Payout(address indexed to, uint256 amount);
+
     function totalAssets() public view returns (uint256) {
         uint256 held = asset.balanceOf(address(this));
         if (perplAccountId == 0) return held;
@@ -81,24 +83,29 @@ contract GentryManagedVault {
 
     function deposit(uint256 assets) external returns (uint256 minted) {
         if (assets == 0) revert ZeroAmount();
-        uint256 beforeAssets = totalAssets();
-        minted = totalShares == 0 ? assets : assets * totalShares / beforeAssets;
-        if (minted == 0) revert ZeroAmount();
         if (!asset.transferFrom(msg.sender, address(this), assets)) revert TransferFailed();
-        shares[msg.sender] += minted;
-        totalShares += minted;
-        emit Deposit(msg.sender, assets, minted);
+        shares[msg.sender] += assets;
+        totalShares += assets;
+        emit Deposit(msg.sender, assets, assets);
+        return assets;
     }
 
     function withdraw(uint256 shareAmount) external returns (uint256 assets) {
         if (shareAmount == 0) revert ZeroAmount();
         if (shares[msg.sender] < shareAmount) revert InsufficientShares();
-        assets = shareAmount * totalAssets() / totalShares;
-        if (asset.balanceOf(address(this)) < assets) revert InsufficientFreeAssets();
+        if (asset.balanceOf(address(this)) < shareAmount) revert InsufficientFreeAssets();
         shares[msg.sender] -= shareAmount;
         totalShares -= shareAmount;
-        if (!asset.transfer(msg.sender, assets)) revert TransferFailed();
-        emit Withdraw(msg.sender, assets, shareAmount);
+        if (!asset.transfer(msg.sender, shareAmount)) revert TransferFailed();
+        emit Withdraw(msg.sender, shareAmount, shareAmount);
+        return shareAmount;
+    }
+
+    function payout(address to, uint256 amount) external onlyKeeper {
+        if (amount == 0) revert ZeroAmount();
+        if (asset.balanceOf(address(this)) < amount) revert InsufficientFreeAssets();
+        if (!asset.transfer(to, amount)) revert TransferFailed();
+        emit Payout(to, amount);
     }
 
     function setKeeper(address nextKeeper) external onlyOwner { keeper = nextKeeper; emit KeeperSet(nextKeeper); }

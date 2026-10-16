@@ -4,7 +4,7 @@ import { PerplTrader, type TradeIntent, type VaultPosition } from './PerplTrader
 import { ChatErrorBoundary } from './ChatErrorBoundary'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Activity, ArrowRight, ArrowUpRight, ArrowUpRightFromSquare, Check, Moon, Sun,
+  Activity, ArrowDownLeft, ArrowRight, ArrowUpRight, ArrowUpRightFromSquare, Check, Moon, Sun,
   CircleHelp, Coins, Command, Fingerprint, LoaderCircle, Network, RefreshCw,
   Copy, FileCheck2, ScanLine, Search, Share2, Star, Trophy, Wallet, X,
 } from 'lucide-react'
@@ -14,6 +14,7 @@ import { decodePaymentResponseHeader, wrapFetchWithPayment } from '@x402/fetch'
 import { checkUsdcBalance, connectWallet, loadAgents, registerAgent, submitFeedback, usdcAddress, type Agent } from './chain'
 import { useWalletSession } from './wallet'
 import { PnlCardModal } from './PnlCardModal'
+import { DepositWithdrawModal, type UserVaultBalance } from './DepositWithdrawModal'
 
 type AgentEndpoint = {
   name?: string
@@ -252,6 +253,9 @@ export default function App() {
   const [positionsTab, setPositionsTab] = useState<'open' | 'history'>('open')
   const [pnlCardPosition, setPnlCardPosition] = useState<VaultPosition | null>(null)
   const [walletBalances, setWalletBalances] = useState<{ mon: string; ausd: string } | null>(null)
+  const [vaultBalance, setVaultBalance] = useState<UserVaultBalance | null>(null)
+  const [depositModalOpen, setDepositModalOpen] = useState(false)
+  const [depositModalTab, setDepositModalTab] = useState<'deposit' | 'withdraw'>('deposit')
   const [claimingHeaderFaucet, setClaimingHeaderFaucet] = useState(false)
   const [closingPositionId, setClosingPositionId] = useState<string | null>(null)
 
@@ -285,16 +289,34 @@ export default function App() {
     } catch { /* Silent */ }
   }, [walletAddress])
 
+  const fetchVaultBalance = useCallback(async () => {
+    if (!walletAddress) {
+      setVaultBalance(null)
+      return
+    }
+    try {
+      const response = await fetch(`/api/vault/user-balance?address=${encodeURIComponent(walletAddress)}`)
+      if (response.ok) {
+        const payload = await response.json()
+        setVaultBalance(payload)
+      }
+    } catch { /* Silent */ }
+  }, [walletAddress])
+
   useEffect(() => {
     void fetchVaultPositions()
     void fetchWalletBalances()
+    void fetchVaultBalance()
     const posInterval = setInterval(() => void fetchVaultPositions(), 3000)
-    const balInterval = setInterval(() => void fetchWalletBalances(), 6000)
+    const balInterval = setInterval(() => {
+      void fetchWalletBalances()
+      void fetchVaultBalance()
+    }, 4000)
     return () => {
       clearInterval(posInterval)
       clearInterval(balInterval)
     }
-  }, [fetchVaultPositions, fetchWalletBalances])
+  }, [fetchVaultPositions, fetchWalletBalances, fetchVaultBalance])
 
   async function claimHeaderFaucet() {
     if (!walletAddress) return
@@ -542,7 +564,7 @@ export default function App() {
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Could not close position.')
       setNotice(`Closed ${pos.side.toUpperCase()} ${pos.symbol} position with ${Number(payload.realizedPnl || 0) >= 0 ? '+' : ''}$${Number(payload.realizedPnl || 0).toFixed(2)} PnL.`)
-      await fetchVaultPositions()
+      await Promise.all([fetchVaultPositions(), fetchVaultBalance(), fetchWalletBalances()])
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : 'Could not close position.')
     } finally {
@@ -709,16 +731,41 @@ export default function App() {
         <a className="brand" href="#top"><span className="brand-mark"><Command size={18} strokeWidth={2.5} /></span><span>GentrY</span></a>
         <nav className="desktop-nav"><a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a><a className={route === 'research' ? 'active' : ''} href="#research">Research</a><a className={route === 'workspaces' ? 'active' : ''} href="#workspaces">Workspaces</a><a className={route === 'agents' ? 'active' : ''} href="#agents">Agents</a><a className={route === 'reputation' ? 'active' : ''} href="#reputation">Reputation</a></nav>
         <div className="top-actions">
-          {walletAddress && walletBalances && (
+          {walletAddress && (
             <div className="wallet-balance-bar desktop-only">
-              <div className="wallet-balance-item">
+              <div className="wallet-balance-item" title="MON for gas fees">
                 <span className="wallet-balance-dot" />
-                <span>{walletBalances.mon}</span>
+                <span>{walletBalances?.mon || '—'}</span>
               </div>
               <span style={{ color: 'var(--line)' }}>|</span>
-              <div className="wallet-balance-item">
-                <span>{walletBalances.ausd}</span>
+              <div className="wallet-balance-item" title="Personal Wallet AUSD on Monad Testnet">
+                <span style={{ color: 'var(--muted)', fontSize: 11 }}>Wallet:</span>
+                <span>{walletBalances?.ausd || '—'}</span>
               </div>
+              <span style={{ color: 'var(--line)' }}>|</span>
+              <div className="wallet-balance-item" title="GentrY Vault Trading Balance">
+                <span style={{ color: 'var(--muted)', fontSize: 11 }}>Vault:</span>
+                <strong style={{ color: '#10b981' }}>${(vaultBalance?.totalBalance ?? 0).toFixed(2)}</strong>
+                <small style={{ color: 'var(--muted)', fontSize: 10, marginLeft: 3 }}>(${vaultBalance?.availableBalance ?? 0} avail)</small>
+              </div>
+              <button
+                type="button"
+                className="faucet-claim-pill"
+                style={{ background: 'rgba(16, 185, 129, 0.15)', borderColor: 'rgba(16, 185, 129, 0.4)', color: '#10b981', fontWeight: 600 }}
+                onClick={() => { setDepositModalTab('deposit'); setDepositModalOpen(true) }}
+                title="Deposit AUSD from your wallet to trade"
+              >
+                + Deposit
+              </button>
+              <button
+                type="button"
+                className="faucet-claim-pill"
+                style={{ background: 'rgba(255, 255, 255, 0.05)', borderColor: 'var(--line)', color: 'var(--text)' }}
+                onClick={() => { setDepositModalTab('withdraw'); setDepositModalOpen(true) }}
+                title="Withdraw free AUSD and profits back to wallet"
+              >
+                Withdraw
+              </button>
               <button
                 type="button"
                 className="faucet-claim-pill"
@@ -726,7 +773,7 @@ export default function App() {
                 onClick={() => void claimHeaderFaucet()}
                 title="Claim 500 free test AUSD to your wallet"
               >
-                {claimingHeaderFaucet ? 'Claiming…' : '+ Claim 500 AUSD'}
+                {claimingHeaderFaucet ? 'Claiming…' : '+ 500 Faucet'}
               </button>
             </div>
           )}
@@ -734,21 +781,44 @@ export default function App() {
         </div>
       </div>
 
-      {walletAddress && walletBalances && (
+      {walletAddress && (
         <div className="mobile-balance-strip mobile-only">
           <div className="mobile-balance-items">
-            <span className="wallet-balance-item"><span className="wallet-balance-dot" />{walletBalances.mon}</span>
+            <span className="wallet-balance-item"><span className="wallet-balance-dot" />{walletBalances?.mon || '0 MON'}</span>
             <span className="balance-sep">·</span>
-            <span className="wallet-balance-item">{walletBalances.ausd}</span>
+            <span className="wallet-balance-item" title="Personal Wallet">W: {walletBalances?.ausd || '$0'}</span>
+            <span className="balance-sep">·</span>
+            <span className="wallet-balance-item" style={{ color: '#10b981', fontWeight: 600 }} title="Vault Available">
+              V: ${(vaultBalance?.availableBalance ?? 0).toFixed(2)}
+            </span>
           </div>
-          <button
-            type="button"
-            className="faucet-claim-pill"
-            disabled={claimingHeaderFaucet}
-            onClick={() => void claimHeaderFaucet()}
-          >
-            {claimingHeaderFaucet ? 'Claiming…' : '+ 500 AUSD'}
-          </button>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <button
+              type="button"
+              className="faucet-claim-pill"
+              style={{ background: 'rgba(16, 185, 129, 0.15)', borderColor: 'rgba(16, 185, 129, 0.4)', color: '#10b981', fontWeight: 600, padding: '4px 8px' }}
+              onClick={() => { setDepositModalTab('deposit'); setDepositModalOpen(true) }}
+            >
+              + Deposit
+            </button>
+            <button
+              type="button"
+              className="faucet-claim-pill"
+              style={{ background: 'rgba(255, 255, 255, 0.05)', borderColor: 'var(--line)', color: 'var(--text)', padding: '4px 8px' }}
+              onClick={() => { setDepositModalTab('withdraw'); setDepositModalOpen(true) }}
+            >
+              Withdraw
+            </button>
+            <button
+              type="button"
+              className="faucet-claim-pill"
+              disabled={claimingHeaderFaucet}
+              onClick={() => void claimHeaderFaucet()}
+              style={{ padding: '4px 8px' }}
+            >
+              {claimingHeaderFaucet ? '…' : '+ 500'}
+            </button>
+          </div>
         </div>
       )}
 
@@ -780,8 +850,70 @@ export default function App() {
       {route === 'signals' && <section className="signals-section" id="signals">
         <div className="workspace-heading"><div><span>LIVE MARKET SIGNALS</span><h2>See what is moving.</h2><p>Follow prices and market changes. Choose a market to get a closer look.</p></div><button className="refresh-button" disabled={marketsLoading} onClick={() => setMarketsRetry((value) => value + 1)}>{marketsLoading ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}Refresh</button></div>
 
-        {(vaultPositions.length > 0 || vaultHistory.length > 0) && (
+        {(vaultPositions.length > 0 || vaultHistory.length > 0 || (vaultBalance && vaultBalance.totalBalance > 0) || Boolean(walletAddress)) && (
           <div className="vault-positions-panel">
+            {/* Vault Account Summary Bar */}
+            {walletAddress && (
+              <div style={{
+                background: 'rgba(255, 255, 255, 0.02)',
+                border: '1px solid var(--line)',
+                borderRadius: 14,
+                padding: '14px 18px',
+                marginBottom: 16,
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap: 12
+              }}>
+                <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+                  <div>
+                    <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Total Vault Balance</span>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>
+                      ${(vaultBalance?.totalBalance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <small style={{ fontSize: 11, color: 'var(--muted)' }}>AUSD</small>
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Available Margin</span>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: '#10b981', marginTop: 2 }}>
+                      ${(vaultBalance?.availableBalance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <small style={{ fontSize: 11, color: 'var(--muted)' }}>AUSD</small>
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Locked Margin</span>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>
+                      ${(vaultBalance?.lockedMargin ?? 0).toFixed(2)}
+                    </div>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Realized PnL</span>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: (vaultBalance?.realizedPnl ?? 0) >= 0 ? '#10b981' : '#ef4444', marginTop: 2 }}>
+                      {(vaultBalance?.realizedPnl ?? 0) >= 0 ? '+' : ''}${(vaultBalance?.realizedPnl ?? 0).toFixed(2)}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    style={{ padding: '7px 14px', fontSize: 13, background: '#10b981', color: '#fff', border: 'none' }}
+                    onClick={() => { setDepositModalTab('deposit'); setDepositModalOpen(true) }}
+                  >
+                    <ArrowDownLeft size={14} style={{ marginRight: 6 }} /> Deposit AUSD
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    style={{ padding: '7px 14px', fontSize: 13 }}
+                    onClick={() => { setDepositModalTab('withdraw'); setDepositModalOpen(true) }}
+                  >
+                    <ArrowUpRight size={14} style={{ marginRight: 6 }} /> Withdraw
+                  </button>
+                </div>
+              </div>
+            )}
+
             <div className="vault-positions-header">
               <div>
                 <span>MANAGED VAULT POSITIONS</span>
@@ -1019,7 +1151,7 @@ export default function App() {
 
     {chatSession && <ChatErrorBoundary onClose={() => { setChatSession(null); setChatInput(''); setChatMessages([]); setChatLastResult(null) }}><div className="modal-backdrop"><section className="modal agent-chat-modal" aria-label={`Chat with ${chatSession.endpoint.name || 'market research agent'}`}><button className="close-button" disabled={chatBusy} onClick={closeChat}><X size={19} /></button><span className="modal-kicker">AGENT RESEARCH · {chatSession.market.symbol}</span><h2>{chatSession.endpoint.name || 'Market Research Specialist'}.</h2><p>Click “Send message and pay” to approve the x402 payment in Privy. The agent analyzes live {chatSession.market.symbol} market context and risk, then answers below.</p><div className="agent-chat-messages">{chatMessages.length === 0 && <div className="agent-chat-empty">Start with a question about {chatSession.market.symbol}. You can ask follow-up questions, too.</div>}{chatMessages.map((message, index) => <article className={`agent-chat-message ${message.role}`} key={`${index}-${message.role}`}><span>{message.role === 'user' ? 'You' : chatSession.endpoint.name || 'Market research agent'}</span>{message.role === 'agent' && message.result && typeof message.result === 'object' && !Array.isArray(message.result) ? <ResultView value={message.result} /> : <p>{message.text}</p>}{message.role === 'agent' && <div className="agent-trade-action"><button type="button" onClick={() => { const isShort = /bearish|short|downside|decline|sell/i.test(message.text); setTradeIntent({ direction: isShort ? 'short' : 'long', notional: '10', leverage: '5' }); setTradeMarket(chatSession.market) }}>Trade {chatSession.market.symbol} on Perpl <ArrowRight size={13} /></button></div>}{message.paymentTx && <a className="proof-link" href={`${explorer}/tx/${message.paymentTx}`} target="_blank" rel="noreferrer">Payment confirmed <ArrowUpRight size={12} /></a>}</article>)}</div>{notice && <p className="chat-notice" role="status">{notice}</p>}<form className="agent-chat-form" onSubmit={(event) => void sendChatMessage(event)}><label htmlFor="agent-chat-input">Your message</label><textarea id="agent-chat-input" rows={3} value={chatInput} onChange={(event) => setChatInput(event.target.value)} placeholder={`Ask about ${chatSession.market.symbol}…`} required /><div className="agent-chat-price">Listed price: {paymentOf(chatSession.agent, chatSession.endpoint) || 'Shown in your wallet'} per message · Privy asks you to approve before the agent runs.</div><button className="primary-button wide" disabled={chatBusy || !chatInput.trim()}>{chatBusy ? <><LoaderCircle className="spin" size={16} />Check Privy for approval…</> : <><ArrowRight size={16} />Send message and pay</>}</button></form><p className="perpl-network-note">Any trade remains a draft until you review and place it.</p></section></div></ChatErrorBoundary>}
 
-    {tradeMarket && <PerplTrader market={tradeMarket} intent={tradeIntent} walletAddress={walletAddress} onConnect={onConnect} onClose={() => { setTradeMarket(null); setTradeIntent(undefined); void fetchVaultPositions() }} onNotice={setNotice} />}
+    {tradeMarket && <PerplTrader market={tradeMarket} intent={tradeIntent} walletAddress={walletAddress} onConnect={onConnect} onClose={() => { setTradeMarket(null); setTradeIntent(undefined); void fetchVaultPositions(); void fetchVaultBalance(); void fetchWalletBalances() }} onNotice={setNotice} />}
 
     {showRegister && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && busy === null) setShowRegister(false) }}><section className="modal"><button className="close-button" aria-label="Close publish modal" onClick={() => setShowRegister(false)}><X size={19} /></button><span className="modal-kicker">PUBLISH AN AGENT</span><h2>Join the network.</h2><p>Provide a public profile containing the agent’s name, description, capabilities, and available services.</p><form onSubmit={(event) => void onRegister(event)}><label htmlFor="profile-uri">Profile link</label><input id="profile-uri" type="url" value={metadataUri} onChange={(event) => setMetadataUri(event.target.value)} placeholder="https://…" required /><div className="identity-note"><Fingerprint size={18} /><span>Approve registration in your wallet to publish your agent.</span></div><button className="primary-button wide" disabled={!metadataUri.trim() || busy !== null}>{busy === 'register' ? <LoaderCircle className="spin" size={16} /> : <Wallet size={16} />}Connect and register</button></form></section></div>}
 
@@ -1028,6 +1160,20 @@ export default function App() {
         position={pnlCardPosition}
         walletAddress={walletAddress}
         onClose={() => setPnlCardPosition(null)}
+      />
+    )}
+
+    {depositModalOpen && walletAddress && (
+      <DepositWithdrawModal
+        initialTab={depositModalTab}
+        walletAddress={walletAddress}
+        onClose={() => setDepositModalOpen(false)}
+        onSuccess={() => {
+          void fetchVaultPositions()
+          void fetchVaultBalance()
+          void fetchWalletBalances()
+        }}
+        onNotice={setNotice}
       />
     )}
   </div>

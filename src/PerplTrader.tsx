@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { ArrowUpRight, Check, LoaderCircle, Share2, ShieldCheck, X } from 'lucide-react'
 import { useWalletSession } from './wallet'
 import { PnlCardModal } from './PnlCardModal'
+import { DepositWithdrawModal, type UserVaultBalance } from './DepositWithdrawModal'
 
 type Market = { id: number; symbol: string; mark: number; sizeDecimals?: number }
 export type TradeIntent = { direction?: 'long' | 'short'; notional?: string; leverage?: string }
@@ -51,6 +52,8 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
   const [positions, setPositions] = useState<VaultPosition[]>([])
   const [pnlCardPosition, setPnlCardPosition] = useState<VaultPosition | null>(null)
   const [walletBalances, setWalletBalances] = useState<{ mon: string; ausd: string } | null>(null)
+  const [vaultBalance, setVaultBalance] = useState<UserVaultBalance | null>(null)
+  const [showDepositModal, setShowDepositModal] = useState(false)
   const [claimingFaucet, setClaimingFaucet] = useState(false)
 
   useEffect(() => {
@@ -70,9 +73,24 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
     } catch { /* Silent */ }
   }, [walletAddress])
 
+  const fetchVaultBalance = useCallback(async () => {
+    if (!walletAddress) {
+      setVaultBalance(null)
+      return
+    }
+    try {
+      const res = await fetch(`/api/vault/user-balance?address=${encodeURIComponent(walletAddress)}`)
+      if (res.ok) {
+        const data = await res.json()
+        setVaultBalance(data)
+      }
+    } catch { /* Silent */ }
+  }, [walletAddress])
+
   useEffect(() => {
     void fetchBalances()
-  }, [fetchBalances])
+    void fetchVaultBalance()
+  }, [fetchBalances, fetchVaultBalance])
 
   async function claimFaucet() {
     if (!walletAddress) return
@@ -86,6 +104,7 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
       if (res.ok) {
         onNotice('Claimed 500 AUSD from faucet to your wallet!')
         void fetchBalances()
+        void fetchVaultBalance()
       } else {
         const err = await res.json()
         setError(err.error || 'Could not claim faucet tokens.')
@@ -122,9 +141,12 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
 
   useEffect(() => {
     void fetchPositions()
-    const interval = setInterval(() => void fetchPositions(), 3000)
+    const interval = setInterval(() => {
+      void fetchPositions()
+      void fetchVaultBalance()
+    }, 3000)
     return () => clearInterval(interval)
-  }, [fetchPositions])
+  }, [fetchPositions, fetchVaultBalance])
 
   const estimate = useMemo(() => {
     const amount = Number(notional)
@@ -199,30 +221,44 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
         <h2 id="trade-title">Trade {market.symbol} Perpetual</h2>
         <p>Review the order, then GentrY submits it through its funded Perpl vault. Your Privy wallet signs you in; no separate trading credentials are required.</p>
 
-        {/* User Connected Wallet Balance in simplicity */}
-        {walletAddress && walletBalances && (
-          <div className="wallet-balance-bar" style={{ marginBottom: 12 }}>
+        {/* User Connected Wallet & Vault Balances */}
+        {walletAddress && (
+          <div className="wallet-balance-bar" style={{ marginBottom: 12, flexWrap: 'wrap', gap: 6 }}>
             <div className="wallet-balance-item">
               <span className="wallet-balance-dot" />
-              <span>{walletBalances.mon}</span>
+              <span>{walletBalances?.mon || '—'}</span>
             </div>
             <span style={{ color: 'var(--line)' }}>|</span>
-            <div className="wallet-balance-item">
-              <span>{walletBalances.ausd}</span>
+            <div className="wallet-balance-item" title="Personal Wallet AUSD on Monad Testnet">
+              <span style={{ color: 'var(--muted)', fontSize: 11 }}>Wallet:</span>
+              <span>{walletBalances?.ausd || '—'}</span>
             </div>
+            <span style={{ color: 'var(--line)' }}>|</span>
+            <div className="wallet-balance-item" title="Available Margin in GentrY Vault">
+              <span style={{ color: 'var(--muted)', fontSize: 11 }}>Vault Avail:</span>
+              <strong style={{ color: '#10b981' }}>${(vaultBalance?.availableBalance ?? 0).toFixed(2)}</strong>
+            </div>
+            <button
+              type="button"
+              className="faucet-claim-pill"
+              style={{ background: 'rgba(16, 185, 129, 0.15)', borderColor: 'rgba(16, 185, 129, 0.4)', color: '#10b981', fontWeight: 600 }}
+              onClick={() => setShowDepositModal(true)}
+            >
+              + Deposit
+            </button>
             <button
               type="button"
               className="faucet-claim-pill"
               disabled={claimingFaucet}
               onClick={() => void claimFaucet()}
             >
-              {claimingFaucet ? 'Claiming…' : '+ Claim 500 AUSD'}
+              {claimingFaucet ? 'Claiming…' : '+ 500 Faucet'}
             </button>
           </div>
         )}
 
         {!result && <>
-          <div className="perpl-privacy"><ShieldCheck size={15} /><span>Vault account is funded in test AUSD and each order stays inside its onchain market cap. Privy asks for a signature before GentrY submits it.</span></div>
+          <div className="perpl-privacy"><ShieldCheck size={15} /><span>Orders execute through the GentrY vault with your available margin backing the position. Privy wallet signs every trade intent.</span></div>
           {!available && <div className="perpl-inline-error">This market is not enabled in the managed vault yet. Choose BTC, ETH, SOL, or MON.</div>}
           {ready === false && <div className="perpl-inline-error">Managed execution is reconnecting. Try again shortly.</div>}
           <form className="perpl-order-form" onSubmit={(event) => void execute(event)}>
@@ -273,15 +309,66 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
               </label>
             </div>
 
-            <div className="order-review">
-              <div><span>Market</span><strong>{market.symbol} Perpetual</strong></div>
-              <div><span>Side</span><strong style={{ color: side === 'long' ? '#087b51' : '#bb443a' }}>{side === 'long' ? `BUY / LONG (${leverage}x)` : `SELL / SHORT (${leverage}x)`}</strong></div>
-              <div><span>Mark price</span><strong>{money(market.mark)}</strong></div>
-              <div><span>Approx. size</span><strong>{estimate ? `${estimate.size.toFixed(market.sizeDecimals ?? 4)} ${market.symbol}` : '—'}</strong></div>
-              <div><span>Initial Margin</span><strong>{money(estimate ? estimate.amount / leverage : 0)}</strong></div>
-              <div><span>Execution account</span><strong>GentrY vault</strong></div>
-            </div>
-            <button className="primary-button wide" disabled={busy || !available || ready !== true || !estimate}>{busy ? <><LoaderCircle className="spin" size={16} />Submitting on Monad…</> : `Approve & execute ${side.toUpperCase()} order`}</button>
+            {(() => {
+              const reqMargin = estimate ? estimate.amount / leverage : 0
+              const availMargin = vaultBalance?.availableBalance ?? 0
+              const hasEnoughMargin = availMargin >= reqMargin
+
+              return (
+                <>
+                  <div className="order-review">
+                    <div><span>Market</span><strong>{market.symbol} Perpetual</strong></div>
+                    <div><span>Side</span><strong style={{ color: side === 'long' ? '#087b51' : '#bb443a' }}>{side === 'long' ? `BUY / LONG (${leverage}x)` : `SELL / SHORT (${leverage}x)`}</strong></div>
+                    <div><span>Mark price</span><strong>{money(market.mark)}</strong></div>
+                    <div><span>Approx. size</span><strong>{estimate ? `${estimate.size.toFixed(market.sizeDecimals ?? 4)} ${market.symbol}` : '—'}</strong></div>
+                    <div><span>Initial Margin</span><strong>{money(reqMargin)}</strong></div>
+                    <div><span>Available Vault Margin</span><strong style={{ color: hasEnoughMargin ? '#10b981' : '#ef4444' }}>${availMargin.toFixed(2)}</strong></div>
+                    <div><span>Execution account</span><strong>GentrY vault</strong></div>
+                  </div>
+
+                  {!hasEnoughMargin && estimate && (
+                    <div style={{
+                      background: 'rgba(239, 68, 68, 0.08)',
+                      border: '1px solid rgba(239, 68, 68, 0.25)',
+                      borderRadius: 10,
+                      padding: '10px 12px',
+                      margin: '10px 0',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: 8
+                    }}>
+                      <span style={{ color: '#ef4444', fontSize: 12 }}>
+                        Available margin (${availMargin.toFixed(2)}) is less than required margin (${reqMargin.toFixed(2)}).
+                      </span>
+                      <button
+                        type="button"
+                        className="faucet-claim-pill"
+                        style={{ background: '#10b981', color: '#fff', borderColor: '#10b981', fontWeight: 600, flexShrink: 0 }}
+                        onClick={() => setShowDepositModal(true)}
+                      >
+                        + Deposit AUSD
+                      </button>
+                    </div>
+                  )}
+
+                  {!hasEnoughMargin && estimate ? (
+                    <button
+                      type="button"
+                      className="primary-button wide"
+                      style={{ background: '#10b981', color: '#ffffff' }}
+                      onClick={() => setShowDepositModal(true)}
+                    >
+                      Deposit AUSD to Trade (${(reqMargin - availMargin).toFixed(2)} needed)
+                    </button>
+                  ) : (
+                    <button className="primary-button wide" disabled={busy || !available || ready !== true || !estimate}>
+                      {busy ? <><LoaderCircle className="spin" size={16} />Submitting on Monad…</> : `Approve & execute ${side.toUpperCase()} order`}
+                    </button>
+                  )}
+                </>
+              )
+            })()}
           </form>
         </>}
 
@@ -359,6 +446,17 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
           position={pnlCardPosition}
           walletAddress={walletAddress}
           onClose={() => setPnlCardPosition(null)}
+        />
+      )}
+
+      {/* Deposit & Withdraw Modal */}
+      {showDepositModal && (
+        <DepositWithdrawModal
+          walletAddress={walletAddress}
+          initialTab="deposit"
+          onClose={() => setShowDepositModal(false)}
+          onSuccess={() => { void fetchBalances(); void fetchVaultBalance() }}
+          onNotice={onNotice}
         />
       )}
     </div>

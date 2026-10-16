@@ -71,7 +71,7 @@ console.log('Perpl Account opened with ID:', perplAccountId.toString())
 
 // 6. Configure lot caps
 console.log('Setting risk caps for BTC, ETH, SOL, MON...');
-const caps = [[16n, 100n], [32n, 10n], [48n, 100n], [64n, 500n]]
+const caps = [[16n, 10_000_000n], [32n, 10_000_000n], [48n, 10_000_000n], [64n, 100_000_000n]]
 for (const [marketId, lots] of caps) {
   const capHash = await wallet.writeContract({ address: vaultAddress, abi: vaultAbi, functionName: 'setMaxHedgeLots', args: [marketId, lots] })
   await client.waitForTransactionReceipt({ hash: capHash })
