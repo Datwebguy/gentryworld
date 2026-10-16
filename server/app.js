@@ -159,6 +159,13 @@ function perplCredentials(body) {
   return { apiKey, key }
 }
 
+function resolvePerplCredentials(body) {
+  const hasRequestCredentials = typeof body?.apiKey === 'string' && body.apiKey.trim() && typeof body?.privateKey === 'string' && body.privateKey.trim()
+  return perplCredentials(hasRequestCredentials
+    ? body
+    : { apiKey: process.env.PERPL_API_KEY || '', privateKey: process.env.PERPL_API_KEY_SECRET || '' })
+}
+
 async function signedPerplRequest(credentials, method, target, body = '') {
   const timestamp = Date.now().toString()
   const nonce = randomBytes(16).toString('base64url')
@@ -333,7 +340,7 @@ async function verifiedPerplFill(fill) {
 
 app.post('/api/perpl/account', async (req, res) => {
   try {
-    const credentials = perplCredentials(req.body)
+    const credentials = resolvePerplCredentials(req.body)
     const response = await signedPerplRequest(credentials, 'GET', '/v1/trading/wallet')
     const responseText = await response.text()
     let payload = {}
@@ -396,7 +403,7 @@ app.post('/api/perpl/order', async (req, res) => {
     if (!/^0x[a-f\d]{40}$/i.test(String(address || '')) || !Number.isInteger(Number(marketId)) || !['long', 'short'].includes(direction) || !['open', 'close'].includes(action) || !Number.isFinite(Number(notional)) || Number(notional) <= 0 || !Number.isFinite(Number(leverage))) {
       return res.status(400).json({ error: 'Review the wallet, market, size, direction, and leverage.' })
     }
-    const credentials = perplCredentials({ apiKey, privateKey })
+    const credentials = resolvePerplCredentials({ apiKey, privateKey })
     const walletResponse = await signedPerplRequest(credentials, 'GET', '/v1/trading/wallet')
     const wallet = await walletResponse.json().catch(() => ({}))
     if (!walletResponse.ok) {
@@ -462,7 +469,7 @@ app.post('/api/perpl/order-status', async (req, res) => {
     if (![requestId, accountId, marketId].every((value) => Number.isInteger(Number(value))) || ![sizeDecimals, priceDecimals].every((value) => Number.isInteger(Number(value)) && Number(value) >= 0 && Number(value) <= 18)) {
       return res.status(400).json({ error: 'Review the request, account, and market identifiers.' })
     }
-    const credentials = perplCredentials(req.body)
+    const credentials = resolvePerplCredentials(req.body)
     const response = await signedPerplRequest(credentials, 'GET', '/v1/trading/order-history?count=50')
     if (!response.ok) return res.status(response.status).json({ error: 'Perpl order status is temporarily unavailable.' })
     const history = await response.json().catch(() => ({}))
