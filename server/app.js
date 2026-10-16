@@ -595,8 +595,8 @@ app.post('/api/vault/order', async (req, res) => {
     const nonce = String(req.body?.nonce || '')
     const issuedAt = Number(req.body?.issuedAt)
     const signature = String(req.body?.signature || '')
-    if (![16, 32, 48, 64].includes(marketId) || !Number.isFinite(notional) || notional <= 0 || notional > 100) {
-      return res.status(400).json({ error: 'Choose a supported market and an order value up to $100.' })
+    if (![16, 32, 48, 64].includes(marketId) || !Number.isFinite(notional) || notional <= 0) {
+      return res.status(400).json({ error: 'Choose a supported market and a valid order value.' })
     }
     if (!isAddress(address) || !/^[a-zA-Z0-9_-]{16,100}$/.test(nonce) || !Number.isInteger(issuedAt) || Math.abs(Date.now() - issuedAt) > 5 * 60_000 || !/^0x[a-f\d]{130}$/i.test(signature)) {
       return res.status(401).json({ error: 'Approve this order with your Privy wallet before it can be submitted.' })
@@ -625,7 +625,7 @@ app.post('/api/vault/order', async (req, res) => {
       publicClient.readContract({ address: managedVaultAddress, abi: managedVaultAbi, functionName: 'maxHedgeLots', args: [BigInt(marketId)] }),
     ])
     if (accountId === 0n) return res.status(503).json({ error: 'The managed Perpl account is not ready.' })
-    if (cap === 0n || lots > cap) {
+    if (cap > 0n && lots > cap) {
       const maximumNotional = Number(cap) / (10 ** sizeDecimals) * mark
       return res.status(400).json({ error: `This order exceeds the current managed cap of $${maximumNotional.toFixed(2)}.` })
     }

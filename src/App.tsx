@@ -704,32 +704,62 @@ export default function App() {
   }
 
   return <div className="app-shell" id="top">
-    <a className="skip-link" href="#main-content">Skip to content</a><header className="topbar">
-      <a className="brand" href="#top"><span className="brand-mark"><Command size={18} strokeWidth={2.5} /></span><span>GentrY</span></a>
-      <nav><a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a><a className={route === 'research' ? 'active' : ''} href="#research">Research</a><a className={route === 'workspaces' ? 'active' : ''} href="#workspaces">Workspaces</a><a className={route === 'agents' ? 'active' : ''} href="#agents">Agents</a><a className={route === 'reputation' ? 'active' : ''} href="#reputation">Reputation</a></nav>
-      <div className="top-actions">
-        {walletAddress && walletBalances && (
-          <div className="wallet-balance-bar">
-            <div className="wallet-balance-item">
-              <span className="wallet-balance-dot" />
-              <span>{walletBalances.mon}</span>
+    <header className="topbar">
+      <div className="topbar-main">
+        <a className="brand" href="#top"><span className="brand-mark"><Command size={18} strokeWidth={2.5} /></span><span>GentrY</span></a>
+        <nav className="desktop-nav"><a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a><a className={route === 'research' ? 'active' : ''} href="#research">Research</a><a className={route === 'workspaces' ? 'active' : ''} href="#workspaces">Workspaces</a><a className={route === 'agents' ? 'active' : ''} href="#agents">Agents</a><a className={route === 'reputation' ? 'active' : ''} href="#reputation">Reputation</a></nav>
+        <div className="top-actions">
+          {walletAddress && walletBalances && (
+            <div className="wallet-balance-bar desktop-only">
+              <div className="wallet-balance-item">
+                <span className="wallet-balance-dot" />
+                <span>{walletBalances.mon}</span>
+              </div>
+              <span style={{ color: 'var(--line)' }}>|</span>
+              <div className="wallet-balance-item">
+                <span>{walletBalances.ausd}</span>
+              </div>
+              <button
+                type="button"
+                className="faucet-claim-pill"
+                disabled={claimingHeaderFaucet}
+                onClick={() => void claimHeaderFaucet()}
+                title="Claim 500 free test AUSD to your wallet"
+              >
+                {claimingHeaderFaucet ? 'Claiming…' : '+ Claim 500 AUSD'}
+              </button>
             </div>
-            <span style={{ color: 'var(--line)' }}>|</span>
-            <div className="wallet-balance-item">
-              <span>{walletBalances.ausd}</span>
-            </div>
-            <button
-              type="button"
-              className="faucet-claim-pill"
-              disabled={claimingHeaderFaucet}
-              onClick={() => void claimHeaderFaucet()}
-              title="Claim 500 free test AUSD to your wallet"
-            >
-              {claimingHeaderFaucet ? 'Claiming…' : '+ Claim 500 AUSD'}
-            </button>
+          )}
+          <button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button><button className="wallet-button" aria-label={walletAddress ? `Account ${walletAddress}` : 'Sign in or connect wallet'} onClick={() => walletAddress ? setAccountMenu((open) => !open) : void onConnect()}><Wallet size={15} />{walletAddress ? shortAddress(walletAddress) : 'Connect'}</button>{accountMenu && authenticated && <div className="wallet-account-menu"><span>GentrY account</span><strong>{identity || 'Wallet account'}</strong><div className="wallet-address-row"><small title={walletAddress}>{walletAddress}</small><button className="wallet-copy-button" onClick={() => void copyWalletAddress()} aria-label="Copy wallet address">{addressCopied ? <Check size={15} /> : <Copy size={15} />}{addressCopied ? 'Copied' : 'Copy'}</button></div><div className="wallet-setup-card"><span><i /> Monad Testnet</span><p>Need test MON for network fees?</p><a href="https://faucet.monad.xyz/" target="_blank" rel="noreferrer">Open Monad faucet <ArrowUpRight size={13} /></a></div><div className="wallet-setup-card"><span><i /> Test AUSD</span><p>Claim test AUSD directly to this Privy wallet.</p><button className="wallet-faucet-button" disabled={claimingAusd} onClick={() => void claimTestAusd()}>{claimingAusd ? <LoaderCircle className="spin" size={13} /> : <Coins size={13} />}{claimingAusd ? 'Claiming AUSD…' : 'Claim test AUSD'}</button></div><button className="wallet-signout-button" onClick={() => { setAccountMenu(false); setWalletAddress(''); void logout() }}>Sign out</button></div>}
+        </div>
+      </div>
+
+      {walletAddress && walletBalances && (
+        <div className="mobile-balance-strip mobile-only">
+          <div className="mobile-balance-items">
+            <span className="wallet-balance-item"><span className="wallet-balance-dot" />{walletBalances.mon}</span>
+            <span className="balance-sep">·</span>
+            <span className="wallet-balance-item">{walletBalances.ausd}</span>
           </div>
-        )}
-        <button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button><button className="wallet-button" aria-label={walletAddress ? `Account ${walletAddress}` : 'Sign in or connect wallet'} onClick={() => walletAddress ? setAccountMenu((open) => !open) : void onConnect()}><Wallet size={15} />{walletAddress ? shortAddress(walletAddress) : 'Connect'}</button>{accountMenu && authenticated && <div className="wallet-account-menu"><span>GentrY account</span><strong>{identity || 'Wallet account'}</strong><div className="wallet-address-row"><small title={walletAddress}>{walletAddress}</small><button className="wallet-copy-button" onClick={() => void copyWalletAddress()} aria-label="Copy wallet address">{addressCopied ? <Check size={15} /> : <Copy size={15} />}{addressCopied ? 'Copied' : 'Copy'}</button></div><div className="wallet-setup-card"><span><i /> Monad Testnet</span><p>Need test MON for network fees?</p><a href="https://faucet.monad.xyz/" target="_blank" rel="noreferrer">Open Monad faucet <ArrowUpRight size={13} /></a></div><div className="wallet-setup-card"><span><i /> Test AUSD</span><p>Claim test AUSD directly to this Privy wallet.</p><button className="wallet-faucet-button" disabled={claimingAusd} onClick={() => void claimTestAusd()}>{claimingAusd ? <LoaderCircle className="spin" size={13} /> : <Coins size={13} />}{claimingAusd ? 'Claiming AUSD…' : 'Claim test AUSD'}</button></div><button className="wallet-signout-button" onClick={() => { setAccountMenu(false); setWalletAddress(''); void logout() }}>Sign out</button></div>}</div>
+          <button
+            type="button"
+            className="faucet-claim-pill"
+            disabled={claimingHeaderFaucet}
+            onClick={() => void claimHeaderFaucet()}
+          >
+            {claimingHeaderFaucet ? 'Claiming…' : '+ 500 AUSD'}
+          </button>
+        </div>
+      )}
+
+      <nav className="mobile-nav-bar mobile-only" aria-label="Mobile Navigation">
+        <a className={route === 'home' ? 'active' : ''} href="#top">Home</a>
+        <a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a>
+        <a className={route === 'research' ? 'active' : ''} href="#research">Research</a>
+        <a className={route === 'workspaces' ? 'active' : ''} href="#workspaces">Workspaces</a>
+        <a className={route === 'agents' ? 'active' : ''} href="#agents">Agents</a>
+        <a className={route === 'reputation' ? 'active' : ''} href="#reputation">Reputation</a>
+      </nav>
     </header>
 
     <main className={route === 'home' ? 'home-main' : 'app-main'} id="main-content">

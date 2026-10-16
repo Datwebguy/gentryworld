@@ -48,7 +48,6 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
   const [error, setError] = useState('')
   const [result, setResult] = useState<Execution | null>(null)
   const [ready, setReady] = useState<boolean | null>(null)
-  const [caps, setCaps] = useState<Record<number, number>>({})
   const [positions, setPositions] = useState<VaultPosition[]>([])
   const [pnlCardPosition, setPnlCardPosition] = useState<VaultPosition | null>(null)
   const [walletBalances, setWalletBalances] = useState<{ mon: string; ausd: string } | null>(null)
@@ -105,9 +104,6 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
       .then((payload) => {
         if (!active) return
         setReady(Boolean(payload.ready))
-        if (payload.caps && typeof payload.caps === 'object') {
-          setCaps(payload.caps)
-        }
       })
       .catch(() => { if (active) setReady(false) })
     return () => { active = false }
@@ -136,27 +132,15 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
     return { size: amount / market.mark, amount }
   }, [notional, market.mark])
 
-  const maxNotional = useMemo(() => {
-    const cap = caps[market.id]
-    if (!cap || !(market.mark > 0)) return 0
-    return (cap / (10 ** (market.sizeDecimals ?? 0))) * market.mark
-  }, [caps, market.id, market.mark, market.sizeDecimals])
-
-  const presets = ['5', '10', '25', '50', '100'].filter((value) => Number(value) <= maxNotional)
-  const available = Boolean(caps[market.id] && caps[market.id] > 0)
-
-  useEffect(() => {
-    if (maxNotional > 0 && Number(notional) > maxNotional) {
-      setNotional(String(Math.min(10, Math.floor(maxNotional))))
-    }
-  }, [maxNotional])
+  const presets = ['10', '25', '50', '100', '250', '500']
+  const available = true
 
   async function execute(event: FormEvent) {
     event.preventDefault()
     setError('')
     if (!walletAddress) { await onConnect(); return }
     if (!walletProvider) { setError('Your Privy wallet is still getting ready. Try again in a moment.'); return }
-    if (!estimate || estimate.amount > maxNotional) { setError(`Choose an order value up to ${money(maxNotional)} for this market.`); return }
+    if (!estimate || estimate.amount <= 0) { setError('Enter a valid order value.'); return }
     setBusy(true)
     try {
       const amount = Number(notional)
@@ -282,8 +266,7 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
             <div className="trade-fields">
               <label htmlFor="trade-notional">
                 Order value (AUSD)
-                <input id="trade-notional" type="number" min="0.01" max={maxNotional || undefined} step="any" inputMode="decimal" value={notional} onChange={(event) => setNotional(event.target.value)} required />
-                <small className="trade-cap-note">Current vault cap: {maxNotional ? money(maxNotional) : '—'}</small>
+                <input id="trade-notional" type="number" min="0.01" step="any" inputMode="decimal" placeholder="Enter amount (e.g. 100)" value={notional} onChange={(event) => setNotional(event.target.value)} required />
                 <div className="trade-preset-pills">
                   {presets.map((value) => <button type="button" key={value} onClick={() => setNotional(value)}>${value}</button>)}
                 </div>

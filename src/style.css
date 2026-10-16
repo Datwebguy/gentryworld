@@ -792,22 +792,296 @@ footer > div { display: flex; justify-content: flex-end; gap: 22px; }
 }
 .trade-leverage-btn {
   flex: 1;
-  padding: 6px 0;
-  border-radius: 6px;
+  padding: 8px 0;
+  border-radius: 7px;
   border: 1px solid var(--line);
   background: var(--surface);
   color: var(--muted);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
   cursor: pointer;
   transition: all .15s ease;
 }
 .trade-leverage-btn:hover {
-  border-color: var(--accent);
+  border-color: #10b981;
   color: var(--ink);
 }
 .trade-leverage-btn.active {
-  background: var(--ink);
-  color: var(--bg);
-  border-color: var(--ink);
+  background: #10b981 !important;
+  color: #ffffff !important;
+  border-color: #10b981 !important;
+  font-weight: 800 !important;
+  box-shadow: 0 2px 10px rgba(16, 185, 129, 0.45) !important;
+}
+
+/* Visibility utilities */
+.desktop-only { display: inline-flex !important; }
+.mobile-only { display: none !important; }
+
+/* Responsive Mobile System */
+@media (max-width: 768px) {
+  /* Prevent iOS Safari auto-zoom on input focus */
+  input, select, textarea {
+    font-size: 16px !important;
+  }
+
+  .desktop-only { display: none !important; }
+  .mobile-only { display: flex !important; }
+
+  /* Topbar Mobile Structure */
+  .topbar {
+    display: flex !important;
+    flex-direction: column !important;
+    height: auto !important;
+    min-height: auto !important;
+    padding: 10px 16px 0 !important;
+    gap: 0 !important;
+    position: sticky !important;
+    top: 0 !important;
+    z-index: 50 !important;
+    background: rgba(243, 240, 232, 0.96) !important;
+    backdrop-filter: blur(16px) !important;
+  }
+  :root[data-theme='dark'] .topbar {
+    background: rgba(17, 26, 22, 0.96) !important;
+  }
+
+  .topbar-main {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    width: 100% !important;
+    min-height: 46px !important;
+  }
+
+  .topbar .desktop-nav {
+    display: none !important;
+  }
+
+  .top-actions {
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+  }
+
+  /* Mobile Balance Strip */
+  .mobile-balance-strip {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    width: 100% !important;
+    padding: 6px 12px !important;
+    margin: 4px 0 6px !important;
+    background: var(--surface) !important;
+    border: 1px solid var(--line) !important;
+    border-radius: 12px !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+  }
+  .mobile-balance-items {
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+  }
+  .balance-sep {
+    color: var(--line) !important;
+    font-weight: bold !important;
+  }
+
+  /* Mobile Horizontal Scrollable Nav Pill Bar */
+  .mobile-nav-bar {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    width: calc(100% + 32px) !important;
+    margin-left: -16px !important;
+    margin-right: -16px !important;
+    padding: 6px 16px 10px !important;
+    overflow-x: auto !important;
+    white-space: nowrap !important;
+    scrollbar-width: none !important;
+    -webkit-overflow-scrolling: touch !important;
+    border-top: 1px solid rgba(0, 0, 0, 0.05) !important;
+  }
+  .mobile-nav-bar::-webkit-scrollbar {
+    display: none !important;
+  }
+  .mobile-nav-bar a {
+    flex-shrink: 0 !important;
+    padding: 6px 14px !important;
+    border-radius: 20px !important;
+    background: var(--paper-2) !important;
+    color: var(--muted) !important;
+    font-size: 12px !important;
+    font-weight: 600 !important;
+    text-decoration: none !important;
+    transition: all 0.15s ease !important;
+  }
+  .mobile-nav-bar a.active {
+    background: #10b981 !important;
+    color: #ffffff !important;
+    font-weight: 700 !important;
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.35) !important;
+  }
+
+  /* Modals as Touch Bottom-Sheets */
+  .modal-backdrop {
+    align-items: flex-end !important;
+    padding: 0 !important;
+    background: rgba(10, 15, 25, 0.72) !important;
+  }
+  .modal, .agent-drawer {
+    width: 100% !important;
+    max-width: 100% !important;
+    border-radius: 24px 24px 0 0 !important;
+    max-height: 88vh !important;
+    padding: 22px 18px 36px !important;
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+    box-shadow: 0 -10px 40px rgba(0, 0, 0, 0.3) !important;
+    border-bottom: none !important;
+  }
+  .close-button {
+    top: 12px !important;
+    right: 12px !important;
+    width: 36px !important;
+    height: 36px !important;
+  }
+
+  /* PerplTrader Modal Mobile */
+  .perpl-trader-modal {
+    width: 100% !important;
+    max-height: 88vh !important;
+  }
+  .trade-direction button {
+    min-height: 44px !important;
+    font-size: 13px !important;
+  }
+  .trade-fields {
+    grid-template-columns: 1fr !important;
+    gap: 10px !important;
+  }
+  .trade-preset-pills {
+    display: grid !important;
+    grid-template-columns: repeat(3, 1fr) !important;
+    gap: 6px !important;
+  }
+  .trade-preset-pills button {
+    padding: 8px 0 !important;
+    text-align: center !important;
+    min-height: 36px !important;
+  }
+  .trade-leverage-group {
+    display: grid !important;
+    grid-template-columns: repeat(4, 1fr) !important;
+    gap: 6px !important;
+  }
+  .trade-leverage-btn {
+    padding: 8px 0 !important;
+    font-size: 12px !important;
+    min-height: 36px !important;
+  }
+
+  /* PnL Share Card Modal Mobile */
+  .pnl-share-modal {
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 20px 16px 32px !important;
+  }
+  .pnl-modal-actions {
+    grid-template-columns: 1fr !important;
+    gap: 8px !important;
+  }
+  .share-action-btn {
+    width: 100% !important;
+    min-height: 44px !important;
+    font-size: 13px !important;
+  }
+  .pnl-tx-proof-row {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 6px !important;
+  }
+
+  /* Vault Positions Panel Mobile */
+  .vault-positions-panel {
+    padding: 16px 14px !important;
+    margin-bottom: 20px !important;
+    border-radius: 12px !important;
+  }
+  .vault-positions-header {
+    flex-direction: column !important;
+    align-items: flex-start !important;
+    gap: 10px !important;
+  }
+  .vault-positions-header h3 {
+    font-size: 17px !important;
+  }
+  .vault-positions-tabs {
+    width: 100% !important;
+  }
+  .vault-tab-btn {
+    flex: 1 !important;
+    text-align: center !important;
+    padding: 8px 10px !important;
+    font-size: 12px !important;
+  }
+  .vault-positions-grid {
+    grid-template-columns: 1fr !important;
+    gap: 12px !important;
+  }
+  .vault-position-card {
+    padding: 14px !important;
+  }
+  .pos-card-metrics {
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
+    padding: 8px 0 !important;
+  }
+  .pos-card-metrics strong {
+    font-size: 12px !important;
+  }
+  .pos-card-actions {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
+  }
+  .pos-share-btn, .pos-close-btn {
+    width: 100% !important;
+    min-height: 38px !important;
+    justify-content: center !important;
+  }
+  .pos-tx-link {
+    grid-column: 1 / -1 !important;
+    justify-content: center !important;
+    padding-top: 4px !important;
+  }
+
+  /* Signals Market Cards Mobile */
+  .signals-section {
+    padding: 0 0 60px !important;
+  }
+  .signal-grid {
+    grid-template-columns: 1fr !important;
+    gap: 12px !important;
+  }
+  .signal-card {
+    min-height: auto !important;
+    padding: 18px 16px !important;
+  }
+  .signal-card h3 {
+    margin: 18px 0 14px !important;
+    font-size: clamp(26px, 8vw, 34px) !important;
+  }
+  .signal-actions {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 8px !important;
+  }
+  .signal-actions button {
+    width: 100% !important;
+    min-height: 42px !important;
+    justify-content: center !important;
+    font-size: 12px !important;
+  }
 }
