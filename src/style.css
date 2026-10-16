@@ -619,3 +619,195 @@ footer > div { display: flex; justify-content: flex-end; gap: 22px; }
 .modal-position-pnl strong {
   font-size: 11px;
 }
+
+/* Positions Tabs (Open Positions / Trade History) */
+.vault-positions-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.vault-tab-btn {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.vault-tab-btn:hover {
+  color: var(--ink);
+  border-color: var(--accent);
+}
+.vault-tab-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* Share PnL Card Button */
+.pos-share-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 12px;
+  border-radius: 7px;
+  border: 1px solid rgba(131, 56, 236, 0.3);
+  background: rgba(131, 56, 236, 0.08);
+  color: #8338ec;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.pos-share-btn:hover {
+  background: #8338ec;
+  color: #fff;
+  border-color: #8338ec;
+}
+
+/* Wallet Balance Bar */
+.wallet-balance-bar {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  padding: 5px 12px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.wallet-balance-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--ink);
+}
+.wallet-balance-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+}
+.faucet-claim-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(16, 185, 129, 0.12);
+  color: #087b51;
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  padding: 3px 9px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.faucet-claim-pill:hover:not(:disabled) {
+  background: #10b981;
+  color: #fff;
+}
+.faucet-claim-pill:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+/* PnL Card Share Modal */
+.pnl-share-modal {
+  max-width: 680px;
+  width: 95vw;
+}
+.pnl-canvas-wrapper {
+  margin: 16px 0;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  background: #090d16;
+  display: flex;
+  justify-content: center;
+}
+.pnl-card-canvas {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 16 / 9;
+  display: block;
+  border-radius: 12px;
+}
+.pnl-modal-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+  margin-top: 14px;
+}
+.share-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 13px;
+  padding: 10px 14px;
+}
+.twitter-button {
+  background: #1d9bf0;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity .15s ease;
+}
+.twitter-button:hover {
+  opacity: .9;
+}
+.pnl-tx-proof-row {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+}
+.pnl-tx-proof-row a {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+.pnl-tx-proof-row a:hover {
+  text-decoration: underline;
+}
+
+/* Trader Leverage selector pills */
+.trade-leverage-group {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.trade-leverage-btn {
+  flex: 1;
+  padding: 6px 0;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.trade-leverage-btn:hover {
+  border-color: var(--accent);
+  color: var(--ink);
+}
+.trade-leverage-btn.active {
+  background: var(--ink);
+  color: var(--bg);
+  border-color: var(--ink);
+}

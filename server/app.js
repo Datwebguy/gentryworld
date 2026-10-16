@@ -57,7 +57,7 @@ async function pacedRpcFetch(input, init) {
   return fetch(input, init)
 }
 const publicClient = createPublicClient({ chain: monad, transport: http(rpcUrl, { fetchFn: pacedRpcFetch, retryCount: 2, retryDelay: 700 }) })
-const upgradedVaultAddress = '0xd85b5c8d03d5b735fce700d7c30f2dd4f33b5a76'
+const upgradedVaultAddress = '0x36838e1c1c091f18f8519104ee3c6d3aa5b7a660'
 const managedVaultAddress = process.env.VAULT_ADDRESS && !['0xb3b8923b4b913bb6627ea5333570a0fd7f03d2b8', '0x51c5a96dbd783109a96e1a49f8bc803e67c87c47'].includes(process.env.VAULT_ADDRESS.toLowerCase()) ? process.env.VAULT_ADDRESS : upgradedVaultAddress
 const managedVaultAbi = parseAbi([
   'function hedge(uint256 marketId, bool open, uint256 lots, uint256 limitPrice)',
@@ -635,15 +635,18 @@ app.post('/api/vault/order', async (req, res) => {
     const receipt = await publicClient.waitForTransactionReceipt({ hash })
     if (receipt.status !== 'success') throw new Error('Transaction reverted')
 
+    const leverage = Math.max(1, Math.min(50, Number(req.body?.leverage || 10)))
     const position = {
       id: `pos_${Date.now()}_${randomBytes(4).toString('hex')}`,
       address: address.toLowerCase(),
       marketId,
       symbol: symbol || 'PERP',
       side,
+      leverage,
       size: Number(lots) / (10 ** sizeDecimals),
       lots: lots.toString(),
       notional: Number((Number(lots) / (10 ** sizeDecimals) * mark).toFixed(4)),
+      initialMargin: Number(((Number(lots) / (10 ** sizeDecimals) * mark) / leverage).toFixed(4)),
       entryPrice: mark,
       openedAt: Date.now(),
       transaction: hash,
@@ -656,7 +659,9 @@ app.post('/api/vault/order', async (req, res) => {
       accepted: true,
       market: position.symbol,
       side,
+      leverage: position.leverage,
       notional: position.notional,
+      initialMargin: position.initialMargin,
       size: position.size,
       entryPrice: mark,
       transaction: hash,
@@ -674,12 +679,12 @@ app.post('/api/vault/order', async (req, res) => {
 app.get('/api/vault/positions', async (req, res) => {
   try {
     const address = String(req.query?.address || '').toLowerCase().trim()
-    if (!isAddress(address)) return res.json({ positions: [] })
+    if (!isAddress(address)) return res.json({ positions: [], history: [] })
 
     let markets = marketSnapshot.value?.markets
-    if (!markets || markets.length === 0) {
+    if (!markets || markets.length === 0 || Date.now() - marketSnapshot.updatedAt > 5_000) {
       try {
-        const contextResponse = await fetch('https://testnet.perpl.xyz/api/v1/pub/context', { signal: AbortSignal.timeout(6000) })
+        const contextResponse = await fetch('https://testnet.perpl.xyz/api/v1/pub/context', { signal: AbortSignal.timeout(4000) })
         if (contextResponse.ok) {
           const context = await contextResponse.json()
           if (Array.isArray(context.markets)) {
@@ -707,6 +712,8 @@ app.get('/api/vault/positions', async (req, res) => {
         const size = Number(pos.size || 0)
         const entryPrice = Number(pos.entryPrice || 0)
         const notional = Number(pos.notional || 0)
+        const leverage = Number(pos.leverage || 10)
+        const initialMargin = Number(pos.initialMargin || (notional / leverage) || (notional / 10))
 
         let unrealizedPnl = 0
         if (pos.side === 'long') {
@@ -714,20 +721,41 @@ app.get('/api/vault/positions', async (req, res) => {
         } else {
           unrealizedPnl = (entryPrice - currentMark) * size
         }
-        const pnlPct = notional > 0 ? (unrealizedPnl / notional) * 100 : 0
+        const roePct = initialMargin > 0 ? (unrealizedPnl / initialMargin) * 100 : 0
         const currentNotional = currentMark * size
+
+        let liquidationPrice = 0
+        if (pos.side === 'long') {
+          liquidationPrice = entryPrice * (1 - (1 / leverage) * 0.9)
+          if (liquidationPrice < 0) liquidationPrice = 0
+        } else {
+          liquidationPrice = entryPrice * (1 + (1 / leverage) * 0.9)
+        }
 
         return {
           ...pos,
+          leverage,
+          initialMargin: Number(initialMargin.toFixed(4)),
           currentMark,
-          currentNotional,
+          currentNotional: Number(currentNotional.toFixed(4)),
           unrealizedPnl: Number(unrealizedPnl.toFixed(4)),
-          pnlPct: Number(pnlPct.toFixed(2)),
+          roePct: Number(roePct.toFixed(2)),
+          pnlPct: Number(roePct.toFixed(2)),
+          liquidationPrice: Number(liquidationPrice.toFixed(4)),
         }
       })
       .sort((a, b) => b.openedAt - a.openedAt)
 
-    res.json({ positions: userPositions })
+    const userHistory = storedPositions
+      .filter((pos) => pos.address?.toLowerCase() === address && pos.status === 'closed')
+      .map((pos) => ({
+        ...pos,
+        leverage: Number(pos.leverage || 10),
+      }))
+      .sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0))
+      .slice(0, 20)
+
+    res.json({ positions: userPositions, history: userHistory })
   } catch (err) {
     console.error('Error fetching vault positions:', err)
     res.status(500).json({ error: 'Could not fetch positions.' })
@@ -784,6 +812,10 @@ app.post('/api/vault/close', async (req, res) => {
       ? (mark - pos.entryPrice) * pos.size
       : (pos.entryPrice - mark) * pos.size
 
+    const leverage = Number(pos.leverage || 10)
+    const initialMargin = Number(pos.initialMargin || (pos.notional / leverage))
+    const roePct = initialMargin > 0 ? (realizedPnl / initialMargin) * 100 : 0
+
     storedPositions[posIndex] = {
       ...pos,
       status: 'closed',
@@ -791,6 +823,7 @@ app.post('/api/vault/close', async (req, res) => {
       closePrice: mark,
       closeTransaction: hash,
       realizedPnl: Number(realizedPnl.toFixed(4)),
+      realizedRoePct: Number(roePct.toFixed(2)),
     }
     savePositions()
 
@@ -800,6 +833,7 @@ app.post('/api/vault/close', async (req, res) => {
       positionId: pos.id,
       market: pos.symbol,
       realizedPnl: Number(realizedPnl.toFixed(4)),
+      realizedRoePct: Number(roePct.toFixed(2)),
       closePrice: mark,
       transaction: hash,
     })
@@ -807,6 +841,54 @@ app.post('/api/vault/close', async (req, res) => {
     console.error('Failed to close managed position:', err)
     const msg = err instanceof Error ? err.message : 'Perpl could not close this managed position.'
     res.status(502).json({ error: msg.includes('revert') ? 'Transaction reverted on Monad Testnet.' : msg })
+  }
+})
+
+app.get('/api/wallet/balance', async (req, res) => {
+  try {
+    const address = String(req.query?.address || '').toLowerCase().trim()
+    if (!isAddress(address)) return res.status(400).json({ error: 'Valid EVM address required.' })
+    const ausdAddress = '0xa9012a055bd4e0eDfF8Ce09f960291C09D5322dC'
+    const erc20Abi = parseAbi(['function balanceOf(address account) view returns (uint256)'])
+    const [monRaw, ausdRaw] = await Promise.all([
+      publicClient.getBalance({ address }),
+      publicClient.readContract({ address: ausdAddress, abi: erc20Abi, functionName: 'balanceOf', args: [address] }).catch(() => 0n)
+    ])
+    const mon = Number(formatEther(monRaw))
+    const ausd = Number(formatUnits(ausdRaw, 6))
+    res.json({
+      address,
+      mon: Number(mon.toFixed(4)),
+      ausd: Number(ausd.toFixed(2)),
+      formatted: {
+        mon: `${mon.toFixed(3)} MON`,
+        ausd: `$${ausd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} AUSD`
+      }
+    })
+  } catch (err) {
+    console.error('Failed to get wallet balance:', err)
+    res.status(500).json({ error: 'Could not fetch balances.' })
+  }
+})
+
+app.post('/api/faucet/claim', async (req, res) => {
+  try {
+    const address = String(req.body?.address || '').toLowerCase().trim()
+    if (!isAddress(address)) return res.status(400).json({ error: 'Valid EVM address required.' })
+    const faucet = '0xd236c18D274E54FAccC3dd9DDA4b27965a73ee6C'
+    const faucetAbi = parseAbi(['function requestFunds(address)'])
+    const wallet = managedVaultWallet()
+    const hash = await wallet.writeContract({
+      address: faucet,
+      abi: faucetAbi,
+      functionName: 'requestFunds',
+      args: [address]
+    })
+    await publicClient.waitForTransactionReceipt({ hash })
+    res.json({ success: true, transaction: hash, amount: '500 AUSD' })
+  } catch (err) {
+    console.error('Faucet claim error:', err)
+    res.status(500).json({ error: 'Faucet request could not be completed.' })
   }
 })
 

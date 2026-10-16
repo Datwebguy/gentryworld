@@ -6,13 +6,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, ArrowRight, ArrowUpRight, ArrowUpRightFromSquare, Check, Moon, Sun,
   CircleHelp, Coins, Command, Fingerprint, LoaderCircle, Network, RefreshCw,
-  Copy, FileCheck2, ScanLine, Search, Star, Trophy, Wallet, X,
+  Copy, FileCheck2, ScanLine, Search, Share2, Star, Trophy, Wallet, X,
 } from 'lucide-react'
 import { ExactEvmScheme } from '@x402/evm'
 import { x402Client } from '@x402/core/client'
 import { decodePaymentResponseHeader, wrapFetchWithPayment } from '@x402/fetch'
 import { checkUsdcBalance, connectWallet, loadAgents, registerAgent, submitFeedback, usdcAddress, type Agent } from './chain'
 import { useWalletSession } from './wallet'
+import { PnlCardModal } from './PnlCardModal'
 
 type AgentEndpoint = {
   name?: string
@@ -247,11 +248,17 @@ export default function App() {
   const [tradeIntent, setTradeIntent] = useState<TradeIntent | undefined>(undefined)
   const [signalMarket, setSignalMarket] = useState<Market | null>(null)
   const [vaultPositions, setVaultPositions] = useState<VaultPosition[]>([])
+  const [vaultHistory, setVaultHistory] = useState<VaultPosition[]>([])
+  const [positionsTab, setPositionsTab] = useState<'open' | 'history'>('open')
+  const [pnlCardPosition, setPnlCardPosition] = useState<VaultPosition | null>(null)
+  const [walletBalances, setWalletBalances] = useState<{ mon: string; ausd: string } | null>(null)
+  const [claimingHeaderFaucet, setClaimingHeaderFaucet] = useState(false)
   const [closingPositionId, setClosingPositionId] = useState<string | null>(null)
 
   const fetchVaultPositions = useCallback(async () => {
     if (!walletAddress) {
       setVaultPositions([])
+      setVaultHistory([])
       return
     }
     try {
@@ -259,15 +266,58 @@ export default function App() {
       if (response.ok) {
         const payload = await response.json()
         setVaultPositions(Array.isArray(payload.positions) ? payload.positions : [])
+        setVaultHistory(Array.isArray(payload.history) ? payload.history : [])
+      }
+    } catch { /* Silent */ }
+  }, [walletAddress])
+
+  const fetchWalletBalances = useCallback(async () => {
+    if (!walletAddress) {
+      setWalletBalances(null)
+      return
+    }
+    try {
+      const response = await fetch(`/api/wallet/balance?address=${encodeURIComponent(walletAddress)}`)
+      if (response.ok) {
+        const payload = await response.json()
+        setWalletBalances({ mon: `${payload.mon} MON`, ausd: `$${payload.ausd.toFixed(2)} AUSD` })
       }
     } catch { /* Silent */ }
   }, [walletAddress])
 
   useEffect(() => {
     void fetchVaultPositions()
-    const interval = setInterval(() => void fetchVaultPositions(), 8000)
-    return () => clearInterval(interval)
-  }, [fetchVaultPositions])
+    void fetchWalletBalances()
+    const posInterval = setInterval(() => void fetchVaultPositions(), 3000)
+    const balInterval = setInterval(() => void fetchWalletBalances(), 6000)
+    return () => {
+      clearInterval(posInterval)
+      clearInterval(balInterval)
+    }
+  }, [fetchVaultPositions, fetchWalletBalances])
+
+  async function claimHeaderFaucet() {
+    if (!walletAddress) return
+    setClaimingHeaderFaucet(true)
+    try {
+      const res = await fetch('/api/faucet/claim', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ address: walletAddress })
+      })
+      if (res.ok) {
+        setNotice('Claimed 500 AUSD from faucet directly to your wallet!')
+        void fetchWalletBalances()
+      } else {
+        const err = await res.json()
+        setNotice(err.error || 'Faucet claim could not be completed.')
+      }
+    } catch {
+      setNotice('Faucet claim request failed.')
+    } finally {
+      setClaimingHeaderFaucet(false)
+    }
+  }
 
   useEffect(() => {
     const normalizeHash = () => {
@@ -657,7 +707,29 @@ export default function App() {
     <a className="skip-link" href="#main-content">Skip to content</a><header className="topbar">
       <a className="brand" href="#top"><span className="brand-mark"><Command size={18} strokeWidth={2.5} /></span><span>GentrY</span></a>
       <nav><a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a><a className={route === 'research' ? 'active' : ''} href="#research">Research</a><a className={route === 'workspaces' ? 'active' : ''} href="#workspaces">Workspaces</a><a className={route === 'agents' ? 'active' : ''} href="#agents">Agents</a><a className={route === 'reputation' ? 'active' : ''} href="#reputation">Reputation</a></nav>
-      <div className="top-actions"><button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button><button className="wallet-button" aria-label={walletAddress ? `Account ${walletAddress}` : 'Sign in or connect wallet'} onClick={() => walletAddress ? setAccountMenu((open) => !open) : void onConnect()}><Wallet size={15} />{walletAddress ? shortAddress(walletAddress) : 'Connect'}</button>{accountMenu && authenticated && <div className="wallet-account-menu"><span>GentrY account</span><strong>{identity || 'Wallet account'}</strong><div className="wallet-address-row"><small title={walletAddress}>{walletAddress}</small><button className="wallet-copy-button" onClick={() => void copyWalletAddress()} aria-label="Copy wallet address">{addressCopied ? <Check size={15} /> : <Copy size={15} />}{addressCopied ? 'Copied' : 'Copy'}</button></div><div className="wallet-setup-card"><span><i /> Monad Testnet</span><p>Need test MON for network fees?</p><a href="https://faucet.monad.xyz/" target="_blank" rel="noreferrer">Open Monad faucet <ArrowUpRight size={13} /></a></div><div className="wallet-setup-card"><span><i /> Test AUSD</span><p>Claim test AUSD directly to this Privy wallet.</p><button className="wallet-faucet-button" disabled={claimingAusd} onClick={() => void claimTestAusd()}>{claimingAusd ? <LoaderCircle className="spin" size={13} /> : <Coins size={13} />}{claimingAusd ? 'Claiming AUSD…' : 'Claim test AUSD'}</button></div><button className="wallet-signout-button" onClick={() => { setAccountMenu(false); setWalletAddress(''); void logout() }}>Sign out</button></div>}</div>
+      <div className="top-actions">
+        {walletAddress && walletBalances && (
+          <div className="wallet-balance-bar">
+            <div className="wallet-balance-item">
+              <span className="wallet-balance-dot" />
+              <span>{walletBalances.mon}</span>
+            </div>
+            <span style={{ color: 'var(--line)' }}>|</span>
+            <div className="wallet-balance-item">
+              <span>{walletBalances.ausd}</span>
+            </div>
+            <button
+              type="button"
+              className="faucet-claim-pill"
+              disabled={claimingHeaderFaucet}
+              onClick={() => void claimHeaderFaucet()}
+              title="Claim 500 free test AUSD to your wallet"
+            >
+              {claimingHeaderFaucet ? 'Claiming…' : '+ Claim 500 AUSD'}
+            </button>
+          </div>
+        )}
+        <button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button><button className="wallet-button" aria-label={walletAddress ? `Account ${walletAddress}` : 'Sign in or connect wallet'} onClick={() => walletAddress ? setAccountMenu((open) => !open) : void onConnect()}><Wallet size={15} />{walletAddress ? shortAddress(walletAddress) : 'Connect'}</button>{accountMenu && authenticated && <div className="wallet-account-menu"><span>GentrY account</span><strong>{identity || 'Wallet account'}</strong><div className="wallet-address-row"><small title={walletAddress}>{walletAddress}</small><button className="wallet-copy-button" onClick={() => void copyWalletAddress()} aria-label="Copy wallet address">{addressCopied ? <Check size={15} /> : <Copy size={15} />}{addressCopied ? 'Copied' : 'Copy'}</button></div><div className="wallet-setup-card"><span><i /> Monad Testnet</span><p>Need test MON for network fees?</p><a href="https://faucet.monad.xyz/" target="_blank" rel="noreferrer">Open Monad faucet <ArrowUpRight size={13} /></a></div><div className="wallet-setup-card"><span><i /> Test AUSD</span><p>Claim test AUSD directly to this Privy wallet.</p><button className="wallet-faucet-button" disabled={claimingAusd} onClick={() => void claimTestAusd()}>{claimingAusd ? <LoaderCircle className="spin" size={13} /> : <Coins size={13} />}{claimingAusd ? 'Claiming AUSD…' : 'Claim test AUSD'}</button></div><button className="wallet-signout-button" onClick={() => { setAccountMenu(false); setWalletAddress(''); void logout() }}>Sign out</button></div>}</div>
     </header>
 
     <main className={route === 'home' ? 'home-main' : 'app-main'} id="main-content">
@@ -678,72 +750,186 @@ export default function App() {
       {route === 'signals' && <section className="signals-section" id="signals">
         <div className="workspace-heading"><div><span>LIVE MARKET SIGNALS</span><h2>See what is moving.</h2><p>Follow prices and market changes. Choose a market to get a closer look.</p></div><button className="refresh-button" disabled={marketsLoading} onClick={() => setMarketsRetry((value) => value + 1)}>{marketsLoading ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}Refresh</button></div>
 
-        {vaultPositions.length > 0 && (
+        {(vaultPositions.length > 0 || vaultHistory.length > 0) && (
           <div className="vault-positions-panel">
             <div className="vault-positions-header">
               <div>
                 <span>MANAGED VAULT POSITIONS</span>
-                <h3>Your Active Positions ({vaultPositions.length})</h3>
+                <h3>Your Vault Positions ({vaultPositions.length} active)</h3>
               </div>
-              <span className="vault-account-tag"><i /> Monad Testnet Vault</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div className="vault-positions-tabs">
+                  <button
+                    type="button"
+                    className={`vault-tab-btn ${positionsTab === 'open' ? 'active' : ''}`}
+                    onClick={() => setPositionsTab('open')}
+                  >
+                    Open Positions ({vaultPositions.length})
+                  </button>
+                  <button
+                    type="button"
+                    className={`vault-tab-btn ${positionsTab === 'history' ? 'active' : ''}`}
+                    onClick={() => setPositionsTab('history')}
+                  >
+                    Trade History ({vaultHistory.length})
+                  </button>
+                </div>
+                <span className="vault-account-tag"><i /> Monad Testnet Vault</span>
+              </div>
             </div>
-            <div className="vault-positions-grid">
-              {vaultPositions.map((pos) => (
-                <article className="vault-position-card" key={pos.id}>
-                  <div className="pos-card-head">
-                    <strong>{pos.symbol} Perpetual</strong>
-                    <span className={`pos-side-pill ${pos.side}`}>{pos.side.toUpperCase()}</span>
+
+            {positionsTab === 'open' && (
+              <div className="vault-positions-grid">
+                {vaultPositions.length === 0 && (
+                  <div style={{ padding: '24px', color: 'var(--muted)', textAlign: 'center', gridColumn: '1 / -1' }}>
+                    No open positions right now. Select a market below to open a Long or Short position.
                   </div>
-                  <div className="pos-card-metrics">
-                    <div>
-                      <span>Size</span>
-                      <strong>{Number(pos.size || 0).toFixed(4)} {pos.symbol}</strong>
+                )}
+                {vaultPositions.map((pos) => (
+                  <article className="vault-position-card" key={pos.id}>
+                    <div className="pos-card-head">
+                      <div>
+                        <strong>{pos.symbol} Perpetual</strong>
+                        <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 600 }}>{pos.leverage || 10}x</span>
+                      </div>
+                      <span className={`pos-side-pill ${pos.side}`}>{pos.side.toUpperCase()}</span>
                     </div>
-                    <div>
-                      <span>Current value</span>
-                      <strong>${Number(pos.currentNotional || pos.notional || 0).toFixed(2)}</strong>
+                    <div className="pos-card-metrics">
+                      <div>
+                        <span>Size</span>
+                        <strong>{Number(pos.size || 0).toFixed(4)} {pos.symbol}</strong>
+                      </div>
+                      <div>
+                        <span>Current value</span>
+                        <strong>${Number(pos.currentNotional || pos.notional || 0).toFixed(2)}</strong>
+                      </div>
+                      <div>
+                        <span>Entry price</span>
+                        <strong>${Number(pos.entryPrice || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>
+                      </div>
+                      <div>
+                        <span>Current mark</span>
+                        <strong>${Number(pos.currentMark || pos.entryPrice || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>
+                      </div>
+                      <div>
+                        <span>Initial Margin</span>
+                        <strong>${Number(pos.initialMargin || ((pos.notional || 0) / (pos.leverage || 10))).toFixed(2)}</strong>
+                      </div>
+                      <div>
+                        <span>Est. Liq Price</span>
+                        <strong>${Number(pos.liquidationPrice || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>
+                      </div>
+                      <div>
+                        <span>Unrealized PnL ($)</span>
+                        <strong className={Number(pos.unrealizedPnl || 0) >= 0 ? 'signal-up' : 'signal-down'}>
+                          {Number(pos.unrealizedPnl || 0) >= 0 ? '+' : ''}${Number(pos.unrealizedPnl || 0).toFixed(2)}
+                        </strong>
+                      </div>
+                      <div>
+                        <span>ROE (%)</span>
+                        <strong className={Number(pos.roePct ?? pos.pnlPct ?? 0) >= 0 ? 'signal-up' : 'signal-down'}>
+                          {Number(pos.roePct ?? pos.pnlPct ?? 0) >= 0 ? '+' : ''}{Number(pos.roePct ?? pos.pnlPct ?? 0).toFixed(2)}%
+                        </strong>
+                      </div>
                     </div>
-                    <div>
-                      <span>Entry price</span>
-                      <strong>${Number(pos.entryPrice || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>
+                    <div className="pos-card-actions">
+                      <button
+                        type="button"
+                        className="pos-share-btn"
+                        onClick={() => setPnlCardPosition(pos)}
+                        title="Share Bybit/Binance-style PnL Card"
+                      >
+                        <Share2 size={13} /> Share Card
+                      </button>
+                      <button
+                        className="pos-close-btn"
+                        disabled={closingPositionId === pos.id}
+                        onClick={() => void closeVaultPosition(pos)}
+                      >
+                        {closingPositionId === pos.id ? <><LoaderCircle className="spin" size={13} /> Closing on Monad…</> : 'Close Position'}
+                      </button>
+                      <a
+                        href={`https://testnet.monadscan.com/tx/${pos.transaction}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="pos-tx-link"
+                      >
+                        Tx on Monad <ArrowUpRight size={13} />
+                      </a>
                     </div>
-                    <div>
-                      <span>Current mark</span>
-                      <strong>${Number(pos.currentMark || pos.entryPrice || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>
-                    </div>
-                    <div>
-                      <span>Unrealized PnL ($)</span>
-                      <strong className={Number(pos.unrealizedPnl || 0) >= 0 ? 'signal-up' : 'signal-down'}>
-                        {Number(pos.unrealizedPnl || 0) >= 0 ? '+' : ''}${Number(pos.unrealizedPnl || 0).toFixed(2)}
-                      </strong>
-                    </div>
-                    <div>
-                      <span>PnL (%)</span>
-                      <strong className={Number(pos.pnlPct || 0) >= 0 ? 'signal-up' : 'signal-down'}>
-                        {Number(pos.pnlPct || 0) >= 0 ? '+' : ''}{Number(pos.pnlPct || 0).toFixed(2)}%
-                      </strong>
-                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
+
+            {positionsTab === 'history' && (
+              <div className="vault-positions-grid">
+                {vaultHistory.length === 0 && (
+                  <div style={{ padding: '24px', color: 'var(--muted)', textAlign: 'center', gridColumn: '1 / -1' }}>
+                    No closed positions in history yet. Your completed trades will appear here.
                   </div>
-                  <div className="pos-card-actions">
-                    <button
-                      className="pos-close-btn"
-                      disabled={closingPositionId === pos.id}
-                      onClick={() => void closeVaultPosition(pos)}
-                    >
-                      {closingPositionId === pos.id ? <><LoaderCircle className="spin" size={13} /> Closing on Monad…</> : 'Close Position'}
-                    </button>
-                    <a
-                      href={`https://testnet.monadscan.com/tx/${pos.transaction}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="pos-tx-link"
-                    >
-                      Tx on Monad <ArrowUpRight size={13} />
-                    </a>
-                  </div>
-                </article>
-              ))}
-            </div>
+                )}
+                {vaultHistory.map((pos) => (
+                  <article className="vault-position-card" key={pos.id} style={{ opacity: 0.95 }}>
+                    <div className="pos-card-head">
+                      <div>
+                        <strong>{pos.symbol} Perpetual</strong>
+                        <span style={{ marginLeft: 8, fontSize: 11, color: 'var(--muted)', fontWeight: 600 }}>{pos.leverage || 10}x</span>
+                      </div>
+                      <span className={`pos-side-pill ${pos.side}`}>{pos.side.toUpperCase()}</span>
+                    </div>
+                    <div className="pos-card-metrics">
+                      <div>
+                        <span>Size</span>
+                        <strong>{Number(pos.size || 0).toFixed(4)} {pos.symbol}</strong>
+                      </div>
+                      <div>
+                        <span>Entry price</span>
+                        <strong>${Number(pos.entryPrice || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>
+                      </div>
+                      <div>
+                        <span>Close price</span>
+                        <strong>${Number(pos.closePrice || pos.entryPrice || 0).toLocaleString(undefined, { maximumFractionDigits: 4 })}</strong>
+                      </div>
+                      <div>
+                        <span>Realized PnL ($)</span>
+                        <strong className={Number(pos.realizedPnl || 0) >= 0 ? 'signal-up' : 'signal-down'}>
+                          {Number(pos.realizedPnl || 0) >= 0 ? '+' : ''}${Number(pos.realizedPnl || 0).toFixed(2)}
+                        </strong>
+                      </div>
+                      <div>
+                        <span>Realized ROE</span>
+                        <strong className={Number(pos.realizedRoePct ?? 0) >= 0 ? 'signal-up' : 'signal-down'}>
+                          {Number(pos.realizedRoePct ?? 0) >= 0 ? '+' : ''}{Number(pos.realizedRoePct ?? 0).toFixed(2)}%
+                        </strong>
+                      </div>
+                      <div>
+                        <span>Status</span>
+                        <strong style={{ color: 'var(--muted)' }}>CLOSED</strong>
+                      </div>
+                    </div>
+                    <div className="pos-card-actions">
+                      <button
+                        type="button"
+                        className="pos-share-btn"
+                        onClick={() => setPnlCardPosition(pos)}
+                        title="Share Realized PnL Card"
+                      >
+                        <Share2 size={13} /> Share Card
+                      </button>
+                      <a
+                        href={`https://testnet.monadscan.com/tx/${pos.closeTransaction || pos.transaction}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="pos-tx-link"
+                      >
+                        Close Tx <ArrowUpRight size={13} />
+                      </a>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
@@ -806,5 +992,13 @@ export default function App() {
     {tradeMarket && <PerplTrader market={tradeMarket} intent={tradeIntent} walletAddress={walletAddress} onConnect={onConnect} onClose={() => { setTradeMarket(null); setTradeIntent(undefined); void fetchVaultPositions() }} onNotice={setNotice} />}
 
     {showRegister && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && busy === null) setShowRegister(false) }}><section className="modal"><button className="close-button" aria-label="Close publish modal" onClick={() => setShowRegister(false)}><X size={19} /></button><span className="modal-kicker">PUBLISH AN AGENT</span><h2>Join the network.</h2><p>Provide a public profile containing the agent’s name, description, capabilities, and available services.</p><form onSubmit={(event) => void onRegister(event)}><label htmlFor="profile-uri">Profile link</label><input id="profile-uri" type="url" value={metadataUri} onChange={(event) => setMetadataUri(event.target.value)} placeholder="https://…" required /><div className="identity-note"><Fingerprint size={18} /><span>Approve registration in your wallet to publish your agent.</span></div><button className="primary-button wide" disabled={!metadataUri.trim() || busy !== null}>{busy === 'register' ? <LoaderCircle className="spin" size={16} /> : <Wallet size={16} />}Connect and register</button></form></section></div>}
+
+    {pnlCardPosition && (
+      <PnlCardModal
+        position={pnlCardPosition}
+        walletAddress={walletAddress}
+        onClose={() => setPnlCardPosition(null)}
+      />
+    )}
   </div>
 }

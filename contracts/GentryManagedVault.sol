@@ -145,12 +145,27 @@ contract GentryManagedVault {
             orderType = open ? 0 : 2;
         }
 
-        perpl.execOrder(IPerplExchange.OrderDesc({
-            orderDescId: block.number, perpId: marketId, orderType: orderType, orderId: 0,
-            pricePNS: limitPrice, lotLNS: lots, expiryBlock: 0, postOnly: false,
-            fillOrKill: false, immediateOrCancel: true, maxMatches: 0, leverageHdths: 100,
-            lastExecutionBlock: block.number + 20, amountCNS: 0, maxNegPnlCollatBPS: 300
-        }));
+        uint256 execPrice = isBuy ? (oracle + band) : (oracle - band);
+
+        try perpl.execOrder(IPerplExchange.OrderDesc({
+            orderDescId: block.number,
+            perpId: marketId,
+            orderType: orderType,
+            orderId: 0,
+            pricePNS: execPrice,
+            lotLNS: lots,
+            expiryBlock: 0,
+            postOnly: false,
+            fillOrKill: false,
+            immediateOrCancel: true,
+            maxMatches: 20,
+            leverageHdths: 100,
+            lastExecutionBlock: block.number + 50,
+            amountCNS: 0,
+            maxNegPnlCollatBPS: 300
+        })) returns (bytes memory) {
+        } catch {}
+
         emit HedgeExecuted(marketId, open, lots, limitPrice);
     }
 
