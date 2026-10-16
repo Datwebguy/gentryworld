@@ -5,7 +5,7 @@ import { createHash, createPrivateKey, randomBytes, sign as signEd25519 } from '
 import { ExactEvmScheme } from '@x402/evm/exact/server'
 import { HTTPFacilitatorClient, x402ResourceServer } from '@x402/core/server'
 import { paymentMiddleware } from '@x402/express'
-import { createPublicClient, createWalletClient, formatEther, formatUnits, http, isAddress, parseAbi, parseUnits } from 'viem'
+import { createPublicClient, createWalletClient, formatEther, formatUnits, http, isAddress, parseAbi, parseUnits, verifyMessage } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { fileURLToPath } from 'node:url'
 
@@ -61,6 +61,7 @@ const managedVaultAbi = parseAbi([
   'function maxHedgeLots(uint256 marketId) view returns (uint256)',
   'function perplAccountId() view returns (uint256)',
 ])
+const consumedManagedOrderNonces = new Map()
 
 function managedVaultWallet() {
   const raw = String(process.env.KEEPER_PRIVATE_KEY || '').trim().replace(/^['"]|['"]$/g, '')
@@ -516,9 +517,22 @@ app.post('/api/vault/order', async (req, res) => {
     if (!managedVaultAddress) return res.status(503).json({ error: 'Managed execution is being initialized.' })
     const marketId = Number(req.body?.marketId)
     const notional = Number(req.body?.notional)
+    const address = String(req.body?.address || '')
+    const nonce = String(req.body?.nonce || '')
+    const signature = String(req.body?.signature || '')
     if (![16, 32, 48, 64].includes(marketId) || !Number.isFinite(notional) || notional <= 0 || notional > 100) {
       return res.status(400).json({ error: 'Choose a supported market and an order value up to $100.' })
     }
+    if (!isAddress(address) || !/^[a-zA-Z0-9_-]{16,100}$/.test(nonce) || !/^0x[a-f\d]{130}$/i.test(signature)) {
+      return res.status(401).json({ error: 'Approve this order with your Privy wallet before it can be submitted.' })
+    }
+    const orderKey = `${address.toLowerCase()}:${nonce}`
+    if (consumedManagedOrderNonces.has(orderKey)) return res.status(409).json({ error: 'That order approval has already been used.' })
+    const message = `GentrY Testnet vault order\nWallet: ${address.toLowerCase()}\nMarket: ${marketId}\nNotional: ${notional}\nNonce: ${nonce}`
+    const authorized = await verifyMessage({ address, message, signature })
+    if (!authorized) return res.status(401).json({ error: 'The wallet approval could not be verified.' })
+    consumedManagedOrderNonces.set(orderKey, Date.now())
+    for (const [key, createdAt] of consumedManagedOrderNonces) if (Date.now() - createdAt > 15 * 60_000) consumedManagedOrderNonces.delete(key)
     const contextResponse = await fetch('https://testnet.perpl.xyz/api/v1/pub/context', { signal: AbortSignal.timeout(8000) })
     if (!contextResponse.ok) throw new Error('Market context unavailable')
     const context = await contextResponse.json()

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { ArrowUpRight, Check, LoaderCircle, ShieldCheck, X } from 'lucide-react'
+import { useWalletSession } from './wallet'
 
 type Market = { id: number; symbol: string; mark: number; sizeDecimals?: number }
 export type TradeIntent = { direction?: 'long' | 'short'; notional?: string; leverage?: string }
@@ -10,6 +11,7 @@ const supportedMarkets = new Set([16, 32, 48, 64])
 const money = (value: number) => `$${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`
 
 export function PerplTrader({ market, intent, walletAddress, onConnect, onClose, onNotice }: Props) {
+  const { provider: walletProvider } = useWalletSession()
   const [notional, setNotional] = useState(intent?.notional || '10')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -32,9 +34,14 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
     event.preventDefault()
     setError('')
     if (!walletAddress) { await onConnect(); return }
+    if (!walletProvider) { setError('Your Privy wallet is still getting ready. Try again in a moment.'); return }
     setBusy(true)
     try {
-      const response = await fetch('/api/vault/order', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ marketId: market.id, notional: Number(notional) }) })
+      const amount = Number(notional)
+      const nonce = crypto.randomUUID()
+      const message = `GentrY Testnet vault order\nWallet: ${walletAddress.toLowerCase()}\nMarket: ${market.id}\nNotional: ${amount}\nNonce: ${nonce}`
+      const signature = await walletProvider.request({ method: 'personal_sign', params: [message, walletAddress] }) as string
+      const response = await fetch('/api/vault/order', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ marketId: market.id, notional: amount, address: walletAddress, nonce, signature }) })
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Could not execute the managed order.')
       setResult(payload)
