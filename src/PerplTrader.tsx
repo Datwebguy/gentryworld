@@ -164,16 +164,16 @@ export function PerplTrader({ market, intent, walletAddress: _walletAddress, onC
     <section className="modal perpl-trader-modal" role="dialog" aria-modal="true" aria-labelledby="trade-title">
       <button className="close-button" aria-label="Close order panel" disabled={busy !== null} onClick={onClose}><X size={19} /></button>
       <span className="modal-kicker">PERPL TRADING ENGINE · MONAD TESTNET</span>
-      <h2 id="trade-title">{isConnected ? `Trade ${market.symbol} Perpetual` : 'Connect Perpl Account'}</h2>
+      <h2 id="trade-title">{isConnected ? `Trade ${market.symbol} Perpetual` : 'GentrY Managed Execution'}</h2>
       <p>
         {isConnected
           ? `Execute real-time perpetual orders directly inside GentrY on Monad Testnet.`
-          : `GentrY submits reviewed orders to Perpl’s high-speed orderbook on Monad through its funded execution account.`}
+          : `Review a draft, then GentrY’s keeper submits it to Perpl on Monad Testnet. This managed demo uses GentrY’s funded execution account.`}
       </p>
 
       {/* When Connected: Show Connected Account Banner */}
       {isConnected && <div className="perpl-connected-badge">
-        <span><KeyRound size={14} /> Connected: Account #{accountId} {linkedAddress ? `(${linkedAddress.slice(0, 6)}…${linkedAddress.slice(-4)})` : ''}</span>
+        <span><KeyRound size={14} /> GentrY keeper · Account #{accountId} {linkedAddress ? `(${linkedAddress.slice(0, 6)}…${linkedAddress.slice(-4)})` : ''}</span>
         <button type="button" onClick={forgetCredentials}>Disconnect key</button>
       </div>}
 
@@ -395,7 +395,7 @@ export function PerplTrader({ market, intent, walletAddress: _walletAddress, onC
       {/* Recent Fills List */}
       {fills.length > 0 && !result && (
         <div className="perpl-recent-fills">
-          <strong>Recent Fills</strong>
+          <strong>GentrY Execution History</strong>
           {fills.slice(0, 3).map((fill) => (
             <div className="perpl-recent-fill" key={`${fill.orderId}-${fill.timestamp}`}>
               <span className="perpl-fill-summary">{fill.symbol} · {fill.type === 1 || fill.type === 3 ? 'Long' : 'Short'} · {Number(fill.size).toFixed(5)} @ {money(fill.price)}</span>
