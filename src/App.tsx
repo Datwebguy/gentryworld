@@ -38,6 +38,8 @@ type ChatSession = { agent: Agent; endpoint: AgentEndpoint; market: Market }
 const explorer = 'https://testnet.monadscan.com'
 const identityRegistry = '0x8004A818BFB912233c491871b3d84c89A494BD9e'
 const agentSnapshotKey = 'gentry:monad-testnet:agents:v2'
+const ausdFaucetAddress = '0xd236c18D274E54FAccC3dd9DDA4b27965a73ee6C' as const
+const ausdFaucetAbi = [{ type: 'function', name: 'requestFunds', stateMutability: 'nonpayable', inputs: [{ name: 'recipient', type: 'address' }], outputs: [] }] as const
 
 type Route = 'home' | 'agents' | 'workspaces' | 'signals' | 'reputation' | 'publish' | 'profile' | 'research'
 type Market = { id: number; symbol: string; name: string; mark: number; previous: number; changePct: number; fundingRate: number; open: boolean; updatedAt?: number; sizeDecimals?: number; priceDecimals?: number; maxLeverage?: number | null; maxSlippageBps?: number }
@@ -218,6 +220,7 @@ export default function App() {
   const [walletAddress, setWalletAddress] = useState('')
   const [accountMenu, setAccountMenu] = useState(false)
   const [addressCopied, setAddressCopied] = useState(false)
+  const [claimingAusd, setClaimingAusd] = useState(false)
   useEffect(() => { setWalletAddress(connectedAddress || '') }, [connectedAddress])
   const [selected, setSelected] = useState<Agent | null>(null)
   const [hireRequest, setHireRequest] = useState<{ agent: Agent; endpoint: AgentEndpoint } | null>(null)
@@ -470,6 +473,34 @@ export default function App() {
     }
   }
 
+  async function claimTestAusd() {
+    if (claimingAusd) return
+    if (!connectedAddress || !walletProvider) {
+      await onConnect()
+      return
+    }
+    setClaimingAusd(true)
+    try {
+      const { address, wallet } = await connectWallet(walletProvider, connectedAddress)
+      setWalletAddress(address)
+      const hash = await wallet.writeContract({
+        address: ausdFaucetAddress,
+        abi: ausdFaucetAbi,
+        functionName: 'requestFunds',
+        args: [address],
+        account: address,
+      })
+      setNotice(`Test AUSD is on its way to your Privy wallet. View the claim on Monadscan: ${hash}`)
+    } catch (cause) {
+      const message = cause instanceof Error ? cause.message.toLowerCase() : ''
+      setNotice(message.includes('user rejected') || message.includes('user denied')
+        ? 'AUSD claim was cancelled in your wallet.'
+        : 'The AUSD faucet is temporarily unavailable. Try again in a minute.')
+    } finally {
+      setClaimingAusd(false)
+    }
+  }
+
   async function hire(event: React.FormEvent) {
     event.preventDefault()
     if (!hireRequest) return
@@ -577,7 +608,7 @@ export default function App() {
     <a className="skip-link" href="#main-content">Skip to content</a><header className="topbar">
       <a className="brand" href="#top"><span className="brand-mark"><Command size={18} strokeWidth={2.5} /></span><span>GentrY</span></a>
       <nav><a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a><a className={route === 'research' ? 'active' : ''} href="#research">Research</a><a className={route === 'workspaces' ? 'active' : ''} href="#workspaces">Workspaces</a><a className={route === 'agents' ? 'active' : ''} href="#agents">Agents</a><a className={route === 'reputation' ? 'active' : ''} href="#reputation">Reputation</a></nav>
-      <div className="top-actions"><button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button><button className="wallet-button" aria-label={walletAddress ? `Account ${walletAddress}` : 'Sign in or connect wallet'} onClick={() => walletAddress ? setAccountMenu((open) => !open) : void onConnect()}><Wallet size={15} />{walletAddress ? shortAddress(walletAddress) : 'Connect'}</button>{accountMenu && authenticated && <div className="wallet-account-menu"><span>GentrY account</span><strong>{identity || 'Wallet account'}</strong><div className="wallet-address-row"><small title={walletAddress}>{walletAddress}</small><button className="wallet-copy-button" onClick={() => void copyWalletAddress()} aria-label="Copy wallet address">{addressCopied ? <Check size={15} /> : <Copy size={15} />}{addressCopied ? 'Copied' : 'Copy'}</button></div><div className="wallet-setup-card"><span><i /> Monad Testnet</span><p>Need test MON for network fees?</p><a href="https://faucet.monad.xyz/" target="_blank" rel="noreferrer">Open Monad faucet <ArrowUpRight size={13} /></a></div><button className="wallet-signout-button" onClick={() => { setAccountMenu(false); setWalletAddress(''); void logout() }}>Sign out</button></div>}</div>
+      <div className="top-actions"><button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button><button className="wallet-button" aria-label={walletAddress ? `Account ${walletAddress}` : 'Sign in or connect wallet'} onClick={() => walletAddress ? setAccountMenu((open) => !open) : void onConnect()}><Wallet size={15} />{walletAddress ? shortAddress(walletAddress) : 'Connect'}</button>{accountMenu && authenticated && <div className="wallet-account-menu"><span>GentrY account</span><strong>{identity || 'Wallet account'}</strong><div className="wallet-address-row"><small title={walletAddress}>{walletAddress}</small><button className="wallet-copy-button" onClick={() => void copyWalletAddress()} aria-label="Copy wallet address">{addressCopied ? <Check size={15} /> : <Copy size={15} />}{addressCopied ? 'Copied' : 'Copy'}</button></div><div className="wallet-setup-card"><span><i /> Monad Testnet</span><p>Need test MON for network fees?</p><a href="https://faucet.monad.xyz/" target="_blank" rel="noreferrer">Open Monad faucet <ArrowUpRight size={13} /></a></div><div className="wallet-setup-card"><span><i /> Test AUSD</span><p>Claim test AUSD directly to this Privy wallet.</p><button className="wallet-faucet-button" disabled={claimingAusd} onClick={() => void claimTestAusd()}>{claimingAusd ? <LoaderCircle className="spin" size={13} /> : <Coins size={13} />}{claimingAusd ? 'Claiming AUSD…' : 'Claim test AUSD'}</button></div><button className="wallet-signout-button" onClick={() => { setAccountMenu(false); setWalletAddress(''); void logout() }}>Sign out</button></div>}</div>
     </header>
 
     <main className={route === 'home' ? 'home-main' : 'app-main'} id="main-content">
