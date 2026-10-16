@@ -179,6 +179,30 @@ async function signedPerplRequest(credentials, method, target, body = '') {
   })
 }
 
+// Perpl's API-key enrollment endpoints accept a wallet-signed request but reject
+// unregistered browser origins. This proxy deliberately receives no signing-key
+// material: the browser creates that key pair and signs the proof of possession.
+async function proxyPerplEnrollment(req, res, endpoint) {
+  try {
+    const upstream = await fetch(`https://testnet.perpl.xyz/api/v1/api-key/${endpoint}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(req.body || {}),
+      signal: AbortSignal.timeout(10_000),
+    })
+    const text = await upstream.text()
+    if (!upstream.ok) {
+      return res.status(upstream.status).json({ error: upstream.status === 400 ? 'Perpl could not prepare this account pairing.' : 'Perpl API-key pairing is temporarily unavailable.' })
+    }
+    res.status(200).type('application/json').send(text)
+  } catch {
+    res.status(502).json({ error: 'Perpl API-key pairing is temporarily unavailable.' })
+  }
+}
+
+app.post('/api/perpl/api-key/payload', (req, res) => proxyPerplEnrollment(req, res, 'payload'))
+app.post('/api/perpl/api-key/enroll', (req, res) => proxyPerplEnrollment(req, res, 'enroll'))
+
 async function submitPerplOrder(credentials, order) {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket('wss://testnet.perpl.xyz/ws/v1/trading')

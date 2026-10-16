@@ -132,7 +132,7 @@ export function PerplTrader({ market, intent, walletAddress: _walletAddress, onC
       const privateSeed = privatePkcs8.slice(-32)
       if (rawPublic.length !== 32 || privateSeed.length !== 32) throw new Error('Could not create a valid Perpl signing key.')
 
-      const payloadResponse = await fetch('https://testnet.perpl.xyz/api/v1/api-key/payload', {
+      const payloadResponse = await fetch('/api/perpl/api-key/payload', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
@@ -154,7 +154,7 @@ export function PerplTrader({ market, intent, walletAddress: _walletAddress, onC
       const digest = hashTypedData({ domain: typedData.domain as any, types: types as any, primaryType: typedData.primaryType as any, message: typedData.message as any })
       const digestBytes = new Uint8Array(Array.from(hexToBytes(digest)))
       const popSignature = bytesToHex(new Uint8Array(await window.crypto.subtle.sign({ name: 'Ed25519' } as AlgorithmIdentifier, pair.privateKey, digestBytes)))
-      const enrollResponse = await fetch('https://testnet.perpl.xyz/api/v1/api-key/enroll', {
+      const enrollResponse = await fetch('/api/perpl/api-key/enroll', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ chain_id: 10143, address: connectedAddress, typed_data: typedData, mac: payload.mac, signature, pop_signature: popSignature }),
