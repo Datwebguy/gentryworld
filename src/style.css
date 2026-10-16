@@ -380,6 +380,13 @@ footer > div { display: flex; justify-content: flex-end; gap: 22px; }
 .order-review strong { color: var(--ink); font-size: 12px; }
 .trade-risk-note, .perpl-network-note { color: var(--muted); font-size: 11px !important; line-height: 1.55; }
 .perpl-network-note { margin: 14px 0 0 !important; text-align: center; }
+.perpl-recent-fills { display: grid; gap: 8px; margin-top: 14px; min-width: 0; }
+.perpl-recent-fills > strong { color: var(--ink); font-size: 12px; }
+.perpl-recent-fill { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; min-width: 0; padding: 9px 0; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.35; }
+.perpl-fill-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.perpl-recent-fill a, .perpl-fill-status { display: inline-flex; align-items: center; justify-content: flex-end; gap: 3px; min-width: 0; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.perpl-recent-fill a { color: var(--accent); text-decoration: none; }
+.perpl-recent-fill a:hover { text-decoration: underline; }
 .perpl-inline-error { margin-top: 12px; border-radius: 8px; padding: 11px; color: #a23c32; background: #fff0ed; font-size: 12px; line-height: 1.5; }
 .perpl-inline-error a { display: inline-flex; align-items: center; gap: 3px; color: inherit; }
 .order-result { display: grid; justify-items: center; gap: 12px; margin-top: 20px; text-align: center; }

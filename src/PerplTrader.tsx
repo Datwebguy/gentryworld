@@ -398,12 +398,12 @@ export function PerplTrader({ market, intent, walletAddress: _walletAddress, onC
           <strong>Recent Fills</strong>
           {fills.slice(0, 3).map((fill) => (
             <div className="perpl-recent-fill" key={`${fill.orderId}-${fill.timestamp}`}>
-              <span>{fill.symbol} · {fill.type === 1 || fill.type === 3 ? 'Long' : 'Short'} · {fill.size} @ {money(fill.price)}</span>
+              <span className="perpl-fill-summary">{fill.symbol} · {fill.type === 1 || fill.type === 3 ? 'Long' : 'Short'} · {Number(fill.size).toFixed(5)} @ {money(fill.price)}</span>
               {fill.transaction ? (
                 <a href={`https://testnet.monadscan.com/tx/${fill.transaction.hash}`} target="_blank" rel="noreferrer">
                   Confirmed on Monad <ArrowUpRight size={13} />
                 </a>
-              ) : <span>Verifying on Monad…</span>}
+              ) : <span className="perpl-fill-status">Verifying on Monad…</span>}
             </div>
           ))}
         </div>
