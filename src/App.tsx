@@ -198,6 +198,30 @@ function ResultView({ value }: { value: unknown }) {
   return typeof answer === 'string' ? <div className="research-result"><p className="research-answer">{answer}</p><details><summary>Live data used</summary>{grid}</details></div> : grid
 }
 
+function loadCachedPositions(address?: string): VaultPosition[] {
+  if (!address) return []
+  try {
+    const raw = localStorage.getItem(`gentry:positions:${address.toLowerCase()}`)
+    return raw ? JSON.parse(raw) : []
+  } catch { return [] }
+}
+
+function loadCachedHistory(address?: string): VaultPosition[] {
+  if (!address) return []
+  try {
+    const raw = localStorage.getItem(`gentry:history:${address.toLowerCase()}`)
+    return raw ? JSON.parse(raw) : []
+  } catch { return [] }
+}
+
+function saveCachedPositions(address: string, positions: VaultPosition[], history: VaultPosition[]) {
+  if (!address) return
+  try {
+    localStorage.setItem(`gentry:positions:${address.toLowerCase()}`, JSON.stringify(positions))
+    localStorage.setItem(`gentry:history:${address.toLowerCase()}`, JSON.stringify(history))
+  } catch { /* Quota */ }
+}
+
 export default function App() {
   const { address: connectedAddress, provider: walletProvider, authenticated, identity, signTypedData: signEmbeddedTypedData, openWallet, logout } = useWalletSession()
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -221,7 +245,16 @@ export default function App() {
   const [accountMenu, setAccountMenu] = useState(false)
   const [addressCopied, setAddressCopied] = useState(false)
   const [claimingAusd, setClaimingAusd] = useState(false)
-  useEffect(() => { setWalletAddress(connectedAddress || '') }, [connectedAddress])
+  useEffect(() => {
+    setWalletAddress(connectedAddress || '')
+    if (connectedAddress) {
+      try { localStorage.setItem('gentry:last_wallet', connectedAddress.toLowerCase()) } catch {}
+      const cachedPos = loadCachedPositions(connectedAddress)
+      const cachedHist = loadCachedHistory(connectedAddress)
+      if (cachedPos.length > 0) setVaultPositions(cachedPos)
+      if (cachedHist.length > 0) setVaultHistory(cachedHist)
+    }
+  }, [connectedAddress])
   const [selected, setSelected] = useState<Agent | null>(null)
   const [hireRequest, setHireRequest] = useState<{ agent: Agent; endpoint: AgentEndpoint } | null>(null)
   const [hireInput, setHireInput] = useState('')
@@ -246,8 +279,18 @@ export default function App() {
   const [tradeMarket, setTradeMarket] = useState<Market | null>(null)
   const [tradeIntent, setTradeIntent] = useState<TradeIntent | undefined>(undefined)
   const [signalMarket, setSignalMarket] = useState<Market | null>(null)
-  const [vaultPositions, setVaultPositions] = useState<VaultPosition[]>([])
-  const [vaultHistory, setVaultHistory] = useState<VaultPosition[]>([])
+  const [vaultPositions, setVaultPositions] = useState<VaultPosition[]>(() => {
+    try {
+      const lastAddr = localStorage.getItem('gentry:last_wallet') || ''
+      return lastAddr ? loadCachedPositions(lastAddr) : []
+    } catch { return [] }
+  })
+  const [vaultHistory, setVaultHistory] = useState<VaultPosition[]>(() => {
+    try {
+      const lastAddr = localStorage.getItem('gentry:last_wallet') || ''
+      return lastAddr ? loadCachedHistory(lastAddr) : []
+    } catch { return [] }
+  })
   const [positionsTab, setPositionsTab] = useState<'open' | 'history'>('open')
   const [pnlCardPosition, setPnlCardPosition] = useState<VaultPosition | null>(null)
   const [walletBalances, setWalletBalances] = useState<{ mon: string; ausd: string } | null>(null)
@@ -263,12 +306,43 @@ export default function App() {
       setVaultHistory([])
       return
     }
+    const cleanAddr = walletAddress.toLowerCase()
     try {
-      const response = await fetch(`/api/vault/positions?address=${encodeURIComponent(walletAddress)}`)
+      const response = await fetch(`/api/vault/positions?address=${encodeURIComponent(cleanAddr)}&_t=${Date.now()}`, { cache: 'no-store' })
       if (response.ok) {
         const payload = await response.json()
-        setVaultPositions(Array.isArray(payload.positions) ? payload.positions : [])
-        setVaultHistory(Array.isArray(payload.history) ? payload.history : [])
+        const srvPositions = Array.isArray(payload.positions) ? payload.positions : []
+        const srvHistory = Array.isArray(payload.history) ? payload.history : []
+        const cachedPos = loadCachedPositions(cleanAddr)
+        const cachedHist = loadCachedHistory(cleanAddr)
+
+        // Auto-restore after server restart/redeploy if client has cached positions
+        if (srvPositions.length === 0 && cachedPos.length > 0) {
+          try {
+            const syncRes = await fetch('/api/vault/sync', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                address: cleanAddr,
+                positions: cachedPos,
+                history: cachedHist
+              })
+            })
+            if (syncRes.ok) {
+              const syncData = await syncRes.json()
+              const syncedPos = Array.isArray(syncData.positions) ? syncData.positions : cachedPos
+              const syncedHist = Array.isArray(syncData.history) ? syncData.history : cachedHist
+              setVaultPositions(syncedPos)
+              setVaultHistory(syncedHist)
+              saveCachedPositions(cleanAddr, syncedPos, syncedHist)
+              return
+            }
+          } catch { /* Fallback to cached */ }
+        }
+
+        setVaultPositions(srvPositions)
+        setVaultHistory(srvHistory)
+        saveCachedPositions(cleanAddr, srvPositions, srvHistory)
       }
     } catch { /* Silent */ }
   }, [walletAddress])
@@ -279,7 +353,7 @@ export default function App() {
       return
     }
     try {
-      const response = await fetch(`/api/wallet/balance?address=${encodeURIComponent(walletAddress)}`)
+      const response = await fetch(`/api/wallet/balance?address=${encodeURIComponent(walletAddress)}&_t=${Date.now()}`, { cache: 'no-store' })
       if (response.ok) {
         const payload = await response.json()
         setWalletBalances({ mon: `${payload.mon} MON`, ausd: `$${payload.ausd.toFixed(2)} AUSD` })
@@ -293,7 +367,7 @@ export default function App() {
       return
     }
     try {
-      const response = await fetch(`/api/vault/user-balance?address=${encodeURIComponent(walletAddress)}`)
+      const response = await fetch(`/api/vault/user-balance?address=${encodeURIComponent(walletAddress)}&_t=${Date.now()}`, { cache: 'no-store' })
       if (response.ok) {
         const payload = await response.json()
         setVaultBalance(payload)
@@ -562,6 +636,23 @@ export default function App() {
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Could not close position.')
       setNotice(`Closed ${pos.side.toUpperCase()} ${pos.symbol} position with ${Number(payload.realizedPnl || 0) >= 0 ? '+' : ''}$${Number(payload.realizedPnl || 0).toFixed(2)} PnL.`)
+
+      const cleanAddr = walletAddress.toLowerCase()
+      const remaining = vaultPositions.filter((p) => p.id !== pos.id)
+      const closedEntry: VaultPosition = {
+        ...pos,
+        status: 'closed',
+        closedAt: Date.now(),
+        closePrice: payload.closePrice || pos.currentMark || pos.entryPrice,
+        closeTransaction: payload.transaction || pos.transaction,
+        realizedPnl: Number(payload.realizedPnl || 0),
+        realizedRoePct: Number(payload.realizedRoePct || 0),
+      }
+      const updatedHistory = [closedEntry, ...vaultHistory.filter((h) => h.id !== pos.id)]
+      setVaultPositions(remaining)
+      setVaultHistory(updatedHistory)
+      saveCachedPositions(cleanAddr, remaining, updatedHistory)
+
       await Promise.all([fetchVaultPositions(), fetchVaultBalance(), fetchWalletBalances()])
     } catch (cause) {
       setNotice(cause instanceof Error ? cause.message : 'Could not close position.')
@@ -749,6 +840,15 @@ export default function App() {
               >
                 + Deposit
               </button>
+              <button
+                type="button"
+                className="faucet-claim-pill"
+                disabled={claimingHeaderFaucet}
+                onClick={() => void claimHeaderFaucet()}
+                title="Claim 500 test AUSD directly to your wallet"
+              >
+                {claimingHeaderFaucet ? <LoaderCircle className="spin" size={12} /> : '+ 500 AUSD'}
+              </button>
             </div>
           )}
           <button className="theme-toggle" aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}</button>
@@ -852,47 +952,6 @@ export default function App() {
         </div>
       </div>
 
-      {walletAddress && (
-        <div className="mobile-balance-strip mobile-only">
-          <div className="mobile-balance-items">
-            <span className="wallet-balance-item"><span className="wallet-balance-dot" />{walletBalances?.mon || '0 MON'}</span>
-            <span className="balance-sep">·</span>
-            <span className="wallet-balance-item" title="Personal Wallet">W: {walletBalances?.ausd || '$0'}</span>
-            <span className="balance-sep">·</span>
-            <span className="wallet-balance-item" style={{ color: '#10b981', fontWeight: 600 }} title="Vault Available">
-              V: ${(vaultBalance?.availableBalance ?? 0).toFixed(2)}
-            </span>
-          </div>
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            <button
-              type="button"
-              className="faucet-claim-pill"
-              style={{ background: 'rgba(16, 185, 129, 0.15)', borderColor: 'rgba(16, 185, 129, 0.4)', color: '#10b981', fontWeight: 600, padding: '4px 8px' }}
-              onClick={() => { setDepositModalTab('deposit'); setDepositModalOpen(true) }}
-            >
-              + Deposit
-            </button>
-            <button
-              type="button"
-              className="faucet-claim-pill"
-              style={{ background: 'rgba(255, 255, 255, 0.05)', borderColor: 'var(--line)', color: 'var(--text)', padding: '4px 8px' }}
-              onClick={() => { setDepositModalTab('withdraw'); setDepositModalOpen(true) }}
-            >
-              Withdraw
-            </button>
-            <button
-              type="button"
-              className="faucet-claim-pill"
-              disabled={claimingHeaderFaucet}
-              onClick={() => void claimHeaderFaucet()}
-              style={{ padding: '4px 8px' }}
-            >
-              {claimingHeaderFaucet ? '…' : '+ 500'}
-            </button>
-          </div>
-        </div>
-      )}
-
       <nav className="mobile-nav-bar mobile-only" aria-label="Mobile Navigation">
         <a className={route === 'home' ? 'active' : ''} href="#top">Home</a>
         <a className={route === 'signals' ? 'active' : ''} href="#signals">Signals</a>
@@ -925,73 +984,68 @@ export default function App() {
             <h2>See what is moving.</h2>
             <p>Follow prices and market changes. Choose a market to trade or get a closer research look.</p>
           </div>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-            {walletAddress && (
-              <button
-                type="button"
-                className="primary-button"
-                style={{ padding: '7px 14px', fontSize: 13, background: '#10b981', color: '#fff', border: 'none' }}
-                onClick={() => { setDepositModalTab('deposit'); setDepositModalOpen(true) }}
-              >
-                <ArrowDownLeft size={14} style={{ marginRight: 6 }} /> Deposit AUSD
-              </button>
-            )}
-            <button className="refresh-button" disabled={marketsLoading} onClick={() => setMarketsRetry((value) => value + 1)}>
-              {marketsLoading ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}Refresh
-            </button>
-          </div>
+          <button className="refresh-button" disabled={marketsLoading} onClick={() => setMarketsRetry((value) => value + 1)}>
+            {marketsLoading ? <LoaderCircle className="spin" size={15} /> : <RefreshCw size={15} />}Refresh
+          </button>
         </div>
 
-        {/* Vault Account Summary Bar (Visible when connected) */}
+        {/* Vault Account Summary Card (Visible when connected) */}
         {walletAddress && (
-          <div style={{
-            background: 'rgba(255, 255, 255, 0.03)',
-            border: '1px solid var(--line)',
-            borderRadius: 14,
-            padding: '14px 18px',
-            marginBottom: 20,
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            flexWrap: 'wrap',
-            gap: 12
-          }}>
-            <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
-              <div>
-                <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Total Vault Balance</span>
-                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>
-                  ${(vaultBalance?.totalBalance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <small style={{ fontSize: 11, color: 'var(--muted)' }}>AUSD</small>
+          <div className="vault-summary-card">
+            <div className="vault-summary-top">
+              <div className="vault-avail-box">
+                <span className="vault-avail-label">Available Trading Margin</span>
+                <div className="vault-avail-val">
+                  ${(vaultBalance?.availableBalance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  <small>AUSD</small>
                 </div>
               </div>
-              <div>
-                <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Available Margin</span>
-                <div style={{ fontSize: 16, fontWeight: 700, color: '#10b981', marginTop: 2 }}>
-                  ${(vaultBalance?.availableBalance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <small style={{ fontSize: 11, color: 'var(--muted)' }}>AUSD</small>
-                </div>
-              </div>
-              <div>
-                <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Locked Margin</span>
-                <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>
-                  ${(vaultBalance?.lockedMargin ?? 0).toFixed(2)}
-                </div>
-              </div>
-              <div>
-                <span style={{ fontSize: 11, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: 600 }}>Realized PnL</span>
-                <div style={{ fontSize: 16, fontWeight: 700, color: (vaultBalance?.realizedPnl ?? 0) >= 0 ? '#10b981' : '#ef4444', marginTop: 2 }}>
-                  {(vaultBalance?.realizedPnl ?? 0) >= 0 ? '+' : ''}${(vaultBalance?.realizedPnl ?? 0).toFixed(2)}
-                </div>
+              <div className="vault-summary-actions">
+                <button
+                  type="button"
+                  className="vault-action-btn primary"
+                  onClick={() => { setDepositModalTab('deposit'); setDepositModalOpen(true) }}
+                >
+                  <ArrowDownLeft size={14} /> Deposit
+                </button>
+                <button
+                  type="button"
+                  className="vault-action-btn secondary"
+                  onClick={() => { setDepositModalTab('withdraw'); setDepositModalOpen(true) }}
+                >
+                  <ArrowUpRight size={14} /> Withdraw
+                </button>
+                <button
+                  type="button"
+                  className="vault-action-btn faucet"
+                  disabled={claimingHeaderFaucet}
+                  onClick={() => void claimHeaderFaucet()}
+                >
+                  {claimingHeaderFaucet ? <LoaderCircle className="spin" size={13} /> : <Coins size={13} />}
+                  <span>+ 500 AUSD</span>
+                </button>
               </div>
             </div>
 
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-              <button
-                type="button"
-                className="secondary-button"
-                style={{ padding: '7px 14px', fontSize: 13 }}
-                onClick={() => { setDepositModalTab('withdraw'); setDepositModalOpen(true) }}
-              >
-                <ArrowUpRight size={14} style={{ marginRight: 6 }} /> Withdraw
-              </button>
+            <div className="vault-summary-stats">
+              <div className="vault-stat-item">
+                <span>Total Vault Balance</span>
+                <strong>${(vaultBalance?.totalBalance ?? 0).toFixed(2)}</strong>
+              </div>
+              <div className="vault-stat-item">
+                <span>Locked in Trades</span>
+                <strong>${(vaultBalance?.lockedMargin ?? 0).toFixed(2)}</strong>
+              </div>
+              <div className="vault-stat-item">
+                <span>Realized PnL</span>
+                <strong style={{ color: (vaultBalance?.realizedPnl ?? 0) >= 0 ? '#10b981' : '#ef4444' }}>
+                  {(vaultBalance?.realizedPnl ?? 0) >= 0 ? '+' : ''}${(vaultBalance?.realizedPnl ?? 0).toFixed(2)}
+                </strong>
+              </div>
+              <div className="vault-stat-item">
+                <span>Personal Wallet</span>
+                <strong>{walletBalances?.ausd || '$0.00'}</strong>
+              </div>
             </div>
           </div>
         )}

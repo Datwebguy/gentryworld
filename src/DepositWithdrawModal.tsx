@@ -92,7 +92,7 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
       setAllowance(allow)
 
       // 2. Fetch server-tracked vault balance
-      const res = await fetch(`/api/vault/user-balance?address=${encodeURIComponent(cleanWallet)}`)
+      const res = await fetch(`/api/vault/user-balance?address=${encodeURIComponent(cleanWallet)}&_t=${Date.now()}`, { cache: 'no-store' })
       if (res.ok) {
         const data = await res.json()
         setVaultBalance(data)
@@ -190,17 +190,27 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
 
       // Step 3: Notify server to credit balance ledger and record onchain receipt
       setDepositStep('syncing')
-      await fetch('/api/vault/deposit', {
+      const syncRes = await fetch('/api/vault/deposit', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ address: cleanWallet, txHash: depositHash })
+        body: JSON.stringify({ address: cleanWallet, txHash: depositHash, amount: num })
       })
+      if (syncRes.ok) {
+        const syncData = await syncRes.json().catch(() => null)
+        if (syncData?.balance) {
+          setVaultBalance(syncData.balance)
+        }
+      }
 
       setSuccessTx({ hash: depositHash, type: 'deposit', amount: num })
       setAmount('')
       onNotice(`Deposited $${num.toFixed(2)} AUSD into your GentrY vault!`)
       await fetchBalances()
       onSuccess?.()
+
+      // Account for on-chain block propagation delays
+      setTimeout(() => { void fetchBalances(); onSuccess?.() }, 1000)
+      setTimeout(() => { void fetchBalances(); onSuccess?.() }, 2500)
     } catch (err) {
       console.error('Deposit error:', err)
       const msg = err instanceof Error ? err.message : 'Failed to deposit AUSD.'
@@ -252,11 +262,17 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
       const payload = await res.json()
       if (!res.ok) throw new Error(payload.error || 'Could not process withdrawal.')
 
+      if (payload?.balance) {
+        setVaultBalance(payload.balance)
+      }
       setSuccessTx({ hash: payload.transaction, type: 'withdraw', amount: num })
       setAmount('')
       onNotice(`Withdrew $${num.toFixed(2)} AUSD to your wallet on Monad Testnet!`)
       await fetchBalances()
       onSuccess?.()
+
+      setTimeout(() => { void fetchBalances(); onSuccess?.() }, 1000)
+      setTimeout(() => { void fetchBalances(); onSuccess?.() }, 2500)
     } catch (err) {
       console.error('Withdraw error:', err)
       const msg = err instanceof Error ? err.message : 'Failed to withdraw AUSD.'
@@ -449,9 +465,50 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
               </div>
             )}
 
-            <div style={{ margin: '16px 0 8px', fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            {needsApproval && (
+              <div style={{
+                background: 'rgba(255, 255, 255, 0.03)',
+                border: '1px solid var(--line)',
+                borderRadius: 12,
+                padding: '12px 14px',
+                margin: '12px 0 14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8
+              }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', letterSpacing: 0.5 }}>
+                  DEPOSIT FLOW (AUTOMATED 2-STEP)
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
+                  <div style={{
+                    width: 20, height: 20, borderRadius: '50%',
+                    background: allowance >= unitsAmount ? '#10b981' : depositStep === 'approving' ? '#3b82f6' : 'var(--line)',
+                    color: '#fff', display: 'grid', placeItems: 'center', fontSize: 10, fontWeight: 700
+                  }}>
+                    {allowance >= unitsAmount ? '✓' : '1'}
+                  </div>
+                  <span style={{ color: allowance >= unitsAmount ? '#10b981' : 'var(--text)', fontWeight: 600 }}>
+                    1. Approve AUSD for Vault {allowance >= unitsAmount ? '(Approved ✓)' : depositStep === 'approving' ? '(Signing…)' : ''}
+                  </span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
+                  <div style={{
+                    width: 20, height: 20, borderRadius: '50%',
+                    background: depositStep === 'depositing' || depositStep === 'syncing' ? '#10b981' : 'var(--line)',
+                    color: '#fff', display: 'grid', placeItems: 'center', fontSize: 10, fontWeight: 700
+                  }}>
+                    2
+                  </div>
+                  <span style={{ color: depositStep === 'depositing' ? '#10b981' : 'var(--muted)', fontWeight: 500 }}>
+                    2. Deposit ${numAmount > 0 ? numAmount.toFixed(2) : '0.00'} AUSD to Vault
+                  </span>
+                </div>
+              </div>
+            )}
+
+            <div style={{ margin: '14px 0 8px', fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
               <ShieldCheck size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-              <span>Transfers real AUSD on Monad Testnet into your GentrY vault shares in a single flow.</span>
+              <span>Transfers real AUSD on Monad Testnet into your GentrY vault shares.</span>
             </div>
 
             <button

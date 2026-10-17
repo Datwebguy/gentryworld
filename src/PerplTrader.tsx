@@ -131,7 +131,7 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
   const fetchPositions = useCallback(async () => {
     if (!walletAddress) return
     try {
-      const response = await fetch(`/api/vault/positions?address=${encodeURIComponent(walletAddress)}`)
+      const response = await fetch(`/api/vault/positions?address=${encodeURIComponent(walletAddress)}&_t=${Date.now()}`, { cache: 'no-store' })
       if (response.ok) {
         const payload = await response.json()
         setPositions(Array.isArray(payload.positions) ? payload.positions : [])
@@ -179,6 +179,36 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
       if (!response.ok) throw new Error(payload.error || 'Could not execute the managed order.')
       setResult(payload)
       onNotice(`${payload.market} ${side.toUpperCase()} order submitted through the GentrY vault.`)
+
+      // Cache new position immediately
+      const newPos: VaultPosition = {
+        id: payload.positionId || `pos_${Date.now()}`,
+        address: walletAddress.toLowerCase(),
+        marketId: market.id,
+        symbol: payload.market || market.symbol,
+        side,
+        leverage,
+        size: payload.size,
+        lots: payload.lots || '0',
+        notional: payload.notional || amount,
+        initialMargin: payload.initialMargin || (amount / leverage),
+        entryPrice: payload.entryPrice || market.mark,
+        openedAt: Date.now(),
+        transaction: payload.transaction,
+        status: 'open',
+        currentMark: payload.entryPrice || market.mark,
+        currentNotional: payload.notional || amount,
+        unrealizedPnl: 0,
+        roePct: 0,
+        pnlPct: 0
+      }
+      try {
+        const key = `gentry:positions:${walletAddress.toLowerCase()}`
+        const raw = localStorage.getItem(key)
+        const current: VaultPosition[] = raw ? JSON.parse(raw) : []
+        localStorage.setItem(key, JSON.stringify([newPos, ...current.filter((p) => p.id !== newPos.id)]))
+      } catch {}
+
       void fetchPositions()
       void fetchBalances()
     } catch (cause) {
@@ -204,6 +234,30 @@ export function PerplTrader({ market, intent, walletAddress, onConnect, onClose,
       const payload = await response.json()
       if (!response.ok) throw new Error(payload.error || 'Could not close this position.')
       onNotice(`Closed ${pos.side.toUpperCase()} ${pos.symbol} position with ${Number(payload.realizedPnl || 0) >= 0 ? '+' : ''}$${Number(payload.realizedPnl || 0).toFixed(2)} PnL.`)
+
+      try {
+        const cleanAddr = walletAddress.toLowerCase()
+        const keyPos = `gentry:positions:${cleanAddr}`
+        const keyHist = `gentry:history:${cleanAddr}`
+        const rawPos = localStorage.getItem(keyPos)
+        const currentPos: VaultPosition[] = rawPos ? JSON.parse(rawPos) : []
+        const remaining = currentPos.filter((p) => p.id !== pos.id)
+        localStorage.setItem(keyPos, JSON.stringify(remaining))
+
+        const rawHist = localStorage.getItem(keyHist)
+        const currentHist: VaultPosition[] = rawHist ? JSON.parse(rawHist) : []
+        const closedEntry: VaultPosition = {
+          ...pos,
+          status: 'closed',
+          closedAt: Date.now(),
+          closePrice: payload.closePrice || pos.currentMark || pos.entryPrice,
+          closeTransaction: payload.transaction || pos.transaction,
+          realizedPnl: Number(payload.realizedPnl || 0),
+          realizedRoePct: Number(payload.realizedRoePct || 0),
+        }
+        localStorage.setItem(keyHist, JSON.stringify([closedEntry, ...currentHist.filter((h) => h.id !== pos.id)]))
+      } catch {}
+
       void fetchPositions()
       void fetchBalances()
     } catch (cause) {

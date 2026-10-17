@@ -10,6 +10,7 @@ import { privateKeyToAccount } from 'viem/accounts'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
 import path from 'node:path'
+import os from 'node:os'
 
 const app = express()
 app.set('trust proxy', true)
@@ -81,43 +82,59 @@ try { if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true }) } 
 const positionsFilePath = path.join(dataDir, 'vault-positions.json')
 const balancesFilePath = path.join(dataDir, 'vault-balances.json')
 
+const storageCandidates = (filename) => [
+  path.join(dataDir, filename),
+  path.join(os.tmpdir(), filename),
+  path.join('/tmp', filename)
+]
+
 function loadPositions() {
-  try {
-    if (fs.existsSync(positionsFilePath)) {
-      const data = JSON.parse(fs.readFileSync(positionsFilePath, 'utf8'))
-      if (Array.isArray(data)) return data
-    }
-  } catch { /* Fallback */ }
+  for (const p of storageCandidates('vault-positions.json')) {
+    try {
+      if (fs.existsSync(p)) {
+        const data = JSON.parse(fs.readFileSync(p, 'utf8'))
+        if (Array.isArray(data) && data.length > 0) return data
+      }
+    } catch { /* Try next */ }
+  }
   return []
 }
 
 let storedPositions = loadPositions()
 
 function savePositions() {
-  try {
-    fs.writeFileSync(positionsFilePath, JSON.stringify(storedPositions, null, 2), 'utf8')
-  } catch (err) {
-    console.error('Failed to save vault positions:', err)
+  const content = JSON.stringify(storedPositions, null, 2)
+  for (const p of storageCandidates('vault-positions.json')) {
+    try {
+      const dir = path.dirname(p)
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(p, content, 'utf8')
+    } catch { /* Ignore error on read-only locations */ }
   }
 }
 
 function loadBalances() {
-  try {
-    if (fs.existsSync(balancesFilePath)) {
-      const data = JSON.parse(fs.readFileSync(balancesFilePath, 'utf8'))
-      if (typeof data === 'object' && data !== null) return data
-    }
-  } catch { /* Fallback */ }
+  for (const p of storageCandidates('vault-balances.json')) {
+    try {
+      if (fs.existsSync(p)) {
+        const data = JSON.parse(fs.readFileSync(p, 'utf8'))
+        if (typeof data === 'object' && data !== null && Object.keys(data).length > 0) return data
+      }
+    } catch { /* Try next */ }
+  }
   return {}
 }
 
 let storedBalances = loadBalances()
 
 function saveBalances() {
-  try {
-    fs.writeFileSync(balancesFilePath, JSON.stringify(storedBalances, null, 2), 'utf8')
-  } catch (err) {
-    console.error('Failed to save vault balances:', err)
+  const content = JSON.stringify(storedBalances, null, 2)
+  for (const p of storageCandidates('vault-balances.json')) {
+    try {
+      const dir = path.dirname(p)
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(p, content, 'utf8')
+    } catch { /* Ignore */ }
   }
 }
 
@@ -256,6 +273,11 @@ app.use((req, res, next) => {
   res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS')
   res.setHeader('access-control-allow-headers', 'content-type, payment-signature, payment-identifier, access-control-expose-headers, x-payment')
   res.setHeader('access-control-expose-headers', 'payment-required, payment-response, x-payment-response')
+  if (req.path.startsWith('/api')) {
+    res.setHeader('cache-control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+    res.setHeader('pragma', 'no-cache')
+    res.setHeader('expires', '0')
+  }
   if (req.method === 'OPTIONS') return res.sendStatus(204)
   next()
 })
@@ -869,6 +891,63 @@ app.get('/api/vault/positions', async (req, res) => {
   }
 })
 
+app.post('/api/vault/sync', async (req, res) => {
+  try {
+    const rawAddress = String(req.body?.address || '').trim()
+    if (!isAddress(rawAddress)) return res.status(400).json({ error: 'Valid EVM address required.' })
+    const cleanAddress = rawAddress.toLowerCase()
+
+    const clientPositions = Array.isArray(req.body?.positions) ? req.body.positions : []
+    const clientHistory = Array.isArray(req.body?.history) ? req.body.history : []
+
+    let changes = false
+    for (const cp of clientPositions) {
+      if (cp && typeof cp === 'object' && cp.id && String(cp.address || '').toLowerCase() === cleanAddress) {
+        const existingIdx = storedPositions.findIndex((p) => p.id === cp.id)
+        if (existingIdx === -1) {
+          storedPositions.push({
+            ...cp,
+            address: cleanAddress,
+            status: 'open'
+          })
+          changes = true
+        }
+      }
+    }
+
+    for (const ch of clientHistory) {
+      if (ch && typeof ch === 'object' && ch.id && String(ch.address || '').toLowerCase() === cleanAddress) {
+        const existingIdx = storedPositions.findIndex((p) => p.id === ch.id)
+        if (existingIdx === -1) {
+          storedPositions.push({
+            ...ch,
+            address: cleanAddress,
+            status: 'closed'
+          })
+          changes = true
+        }
+      }
+    }
+
+    if (changes) {
+      savePositions()
+    }
+
+    const userPositions = storedPositions
+      .filter((pos) => pos.address?.toLowerCase() === cleanAddress && pos.status === 'open')
+      .sort((a, b) => (b.openedAt || 0) - (a.openedAt || 0))
+    const userHistory = storedPositions
+      .filter((pos) => pos.address?.toLowerCase() === cleanAddress && pos.status === 'closed')
+      .sort((a, b) => (b.closedAt || 0) - (a.closedAt || 0))
+      .slice(0, 20)
+
+    res.json({ success: true, positions: userPositions, history: userHistory })
+  } catch (err) {
+    console.error('Error syncing vault positions:', err)
+    res.status(500).json({ error: 'Could not sync positions.' })
+  }
+})
+
 app.post('/api/vault/close', async (req, res) => {
   try {
     if (!managedVaultAddress) return res.status(503).json({ error: 'Managed execution is being initialized.' })
@@ -1029,8 +1108,11 @@ app.post('/api/vault/deposit', async (req, res) => {
       console.warn('Error reading onchain shares:', err?.message)
     }
 
+    const explicitAmount = Number(req.body?.amount)
+    const validAmount = Number.isFinite(explicitAmount) && explicitAmount > 0 ? explicitAmount : 0
     const acc = getUserAccount(cleanAddress)
-    const depositDelta = eventAssets > 0 ? eventAssets : (sharesAmount > (acc.deposited || 0) ? (sharesAmount - (acc.deposited || 0)) : 0)
+    const effectiveDeposit = eventAssets > 0 ? eventAssets : validAmount
+    const depositDelta = effectiveDeposit > 0 ? effectiveDeposit : (sharesAmount > (acc.deposited || 0) ? (sharesAmount - (acc.deposited || 0)) : 0)
     const targetDeposited = Math.max(sharesAmount, Number(((acc.deposited || 0) + depositDelta).toFixed(4)))
 
     if (targetDeposited > (acc.deposited || 0)) {
@@ -1043,11 +1125,11 @@ app.post('/api/vault/deposit', async (req, res) => {
         timestamp: Date.now()
       })
       saveBalances()
-    } else if (eventAssets > 0) {
-      acc.deposited = Number(((acc.deposited || 0) + eventAssets).toFixed(4))
+    } else if (effectiveDeposit > 0) {
+      acc.deposited = Number(((acc.deposited || 0) + effectiveDeposit).toFixed(4))
       acc.history.push({
         type: 'deposit',
-        amount: eventAssets,
+        amount: effectiveDeposit,
         txHash,
         timestamp: Date.now()
       })
