@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, type FormEvent } from 'react'
-import { ArrowDownLeft, ArrowUpRight, Check, LoaderCircle, ShieldCheck, X } from 'lucide-react'
-import { parseUnits, formatUnits, maxUint256, getAddress } from 'viem'
+import { ArrowDownLeft, ArrowUpRight, Check, Coins, Fuel, LoaderCircle, ShieldCheck, X } from 'lucide-react'
+import { parseUnits, formatUnits, formatEther, maxUint256, getAddress } from 'viem'
 import { useWalletSession } from './wallet'
 import { ausdAddress, managedVaultAddress, ausdAbi, vaultAbi, publicClient, connectWallet } from './chain'
 
@@ -29,10 +29,11 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
   const [tab, setTab] = useState<'deposit' | 'withdraw'>(initialTab)
   const [amount, setAmount] = useState('')
   const [walletAusdRaw, setWalletAusdRaw] = useState<bigint>(0n)
+  const [walletMonRaw, setWalletMonRaw] = useState<bigint>(0n)
   const [vaultBalance, setVaultBalance] = useState<UserVaultBalance | null>(null)
   const [allowance, setAllowance] = useState<bigint>(0n)
   const [busy, setBusy] = useState(false)
-  const [depositStep, setDepositStep] = useState<'' | 'approving' | 'depositing' | 'syncing'>('')
+  const [stepAction, setStepAction] = useState<'' | 'approving' | 'depositing' | 'withdrawing'>('')
   const [claimingFaucet, setClaimingFaucet] = useState(false)
   const [error, setError] = useState('')
   const [successTx, setSuccessTx] = useState<{ hash: string; type: 'deposit' | 'withdraw'; amount: number } | null>(null)
@@ -63,12 +64,13 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
   }, [])
 
   const walletAusd = Number(formatUnits(walletAusdRaw, 6))
+  const walletMon = Number(formatEther(walletMonRaw))
 
   const fetchBalances = useCallback(async () => {
     if (!cleanWallet) return
     try {
-      // 1. Read on-chain AUSD balance and allowance with checksummed addresses
-      const [bal, allow] = await Promise.all([
+      // 1. Read on-chain AUSD balance, allowance, and MON gas balance in parallel
+      const [bal, allow, mon] = await Promise.all([
         publicClient.readContract({
           address: cleanAusd,
           abi: ausdAbi,
@@ -76,7 +78,7 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
           args: [cleanWallet]
         }).catch((err) => {
           console.warn('Error reading AUSD balance:', err)
-          return 0n
+          return null
         }),
         publicClient.readContract({
           address: cleanAusd,
@@ -85,11 +87,27 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
           args: [cleanWallet, cleanVault]
         }).catch((err) => {
           console.warn('Error reading allowance:', err)
-          return 0n
-        })
+          return null
+        }),
+        publicClient.getBalance({ address: cleanWallet }).catch(() => 0n)
       ])
-      setWalletAusdRaw(bal)
-      setAllowance(allow)
+
+      if (bal !== null) setWalletAusdRaw(bal)
+      if (allow !== null) setAllowance(allow)
+      setWalletMonRaw(mon)
+
+      // Fallback: If onchain AUSD read failed, check server balance endpoint
+      if (bal === null) {
+        try {
+          const wRes = await fetch(`/api/wallet/balance?address=${encodeURIComponent(cleanWallet)}&_t=${Date.now()}`, { cache: 'no-store' })
+          if (wRes.ok) {
+            const wData = await wRes.json()
+            if (Number.isFinite(wData.ausd)) {
+              setWalletAusdRaw(parseUnits(wData.ausd.toFixed(6), 6))
+            }
+          }
+        } catch { /* Silent */ }
+      }
 
       // 2. Fetch server-tracked vault balance
       const res = await fetch(`/api/vault/user-balance?address=${encodeURIComponent(cleanWallet)}&_t=${Date.now()}`, { cache: 'no-store' })
@@ -118,13 +136,15 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ address: cleanWallet })
       })
+      const data = await res.json().catch(() => ({}))
       if (res.ok) {
-        onNotice('Claimed 500 AUSD from faucet to your personal wallet!')
+        onNotice(`Claimed ${data.amount || '500 AUSD'} to your personal wallet!`)
+        // Optimistically update wallet AUSD
+        setWalletAusdRaw((prev) => prev + parseUnits('500', 6))
         await fetchBalances()
         onSuccess?.()
       } else {
-        const err = await res.json()
-        setError(err.error || 'Could not claim test tokens.')
+        setError(data.error || 'Could not claim test tokens.')
       }
     } catch {
       setError('Faucet claim request failed.')
@@ -133,7 +153,56 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
     }
   }
 
-  // 1-Click Automated Deposit flow: handles approval + deposit seamlessly
+  const numAmount = Number(amount || 0)
+  const unitsAmount = Number.isFinite(numAmount) && numAmount > 0 ? parseUnits(numAmount.toFixed(6), 6) : 0n
+  const isApproved = unitsAmount > 0n && allowance >= unitsAmount
+  const needsApproval = unitsAmount > 0n && !isApproved
+
+  // Step 1: Explicit user approval (independent user gesture)
+  async function handleApprove() {
+    setError('')
+    setSuccessTx(null)
+    if (!walletProvider || !cleanWallet) {
+      setError('Wallet provider is not ready. Please reconnect your wallet.')
+      return
+    }
+    if (walletMon < 0.001) {
+      setError('You need a small amount of MON for network gas. Click "+ Claim 500 AUSD & Gas" below.')
+      return
+    }
+
+    setBusy(true)
+    setStepAction('approving')
+    try {
+      const { wallet } = await connectWallet(walletProvider, cleanWallet)
+      const approveHash = await wallet.writeContract({
+        address: cleanAusd,
+        abi: ausdAbi,
+        functionName: 'approve',
+        args: [cleanVault, maxUint256],
+        account: cleanWallet
+      })
+      const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveHash })
+      if (approveReceipt.status !== 'success') {
+        throw new Error('AUSD approval transaction failed on Monad Testnet.')
+      }
+      setAllowance(maxUint256)
+      onNotice('AUSD approved for Vault! Click "Deposit to Vault" to complete.')
+    } catch (err) {
+      console.error('Approve error:', err)
+      const msg = err instanceof Error ? err.message : 'Failed to approve AUSD.'
+      if (/rejected|denied|cancel/i.test(msg)) {
+        setError('Approval was cancelled in wallet.')
+      } else {
+        setError(msg)
+      }
+    } finally {
+      setBusy(false)
+      setStepAction('')
+    }
+  }
+
+  // Step 2: Explicit user deposit (independent user gesture)
   async function handleDeposit(e: FormEvent) {
     e.preventDefault()
     setError('')
@@ -144,38 +213,24 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
       return
     }
     if (num > walletAusd) {
-      setError(`Insufficient wallet balance. You have $${walletAusd.toFixed(2)} AUSD. Use "+ Claim 500 AUSD" below if you need testnet funds.`)
+      setError(`Insufficient wallet balance. You have $${walletAusd.toFixed(2)} AUSD. Use "+ Claim 500 AUSD & Gas" below if you need testnet funds.`)
       return
     }
     if (!walletProvider || !cleanWallet) {
       setError('Wallet provider is not ready. Please reconnect your wallet.')
       return
     }
+    if (walletMon < 0.001) {
+      setError('You need a small amount of MON for network gas. Click "+ Claim 500 AUSD & Gas" below.')
+      return
+    }
 
     setBusy(true)
+    setStepAction('depositing')
     try {
       const units = parseUnits(num.toFixed(6), 6)
       const { wallet } = await connectWallet(walletProvider, cleanWallet)
 
-      // Step 1: If allowance is insufficient, request approval first and wait for receipt
-      if (allowance < units) {
-        setDepositStep('approving')
-        const approveHash = await wallet.writeContract({
-          address: cleanAusd,
-          abi: ausdAbi,
-          functionName: 'approve',
-          args: [cleanVault, maxUint256],
-          account: cleanWallet
-        })
-        const approveReceipt = await publicClient.waitForTransactionReceipt({ hash: approveHash })
-        if (approveReceipt.status !== 'success') {
-          throw new Error('AUSD approval transaction failed on Monad Testnet.')
-        }
-        setAllowance(maxUint256)
-      }
-
-      // Step 2: Directly execute onchain vault.deposit
-      setDepositStep('depositing')
       const depositHash = await wallet.writeContract({
         address: cleanVault,
         abi: vaultAbi,
@@ -188,8 +243,10 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
         throw new Error('Deposit transaction reverted on Monad Testnet.')
       }
 
-      // Step 3: Notify server to credit balance ledger and record onchain receipt
-      setDepositStep('syncing')
+      // Optimistically update wallet AUSD immediately
+      setWalletAusdRaw((prev) => (prev >= units ? prev - units : 0n))
+
+      // Notify server to credit balance ledger and record onchain receipt
       const syncRes = await fetch('/api/vault/deposit', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -208,7 +265,6 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
       await fetchBalances()
       onSuccess?.()
 
-      // Account for on-chain block propagation delays
       setTimeout(() => { void fetchBalances(); onSuccess?.() }, 1000)
       setTimeout(() => { void fetchBalances(); onSuccess?.() }, 2500)
     } catch (err) {
@@ -221,7 +277,7 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
       }
     } finally {
       setBusy(false)
-      setDepositStep('')
+      setStepAction('')
     }
   }
 
@@ -245,6 +301,7 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
     }
 
     setBusy(true)
+    setStepAction('withdrawing')
     try {
       const nonce = crypto.randomUUID()
       const issuedAt = Date.now()
@@ -265,6 +322,10 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
       if (payload?.balance) {
         setVaultBalance(payload.balance)
       }
+      // Optimistically credit wallet AUSD
+      const units = parseUnits(num.toFixed(6), 6)
+      setWalletAusdRaw((prev) => prev + units)
+
       setSuccessTx({ hash: payload.transaction, type: 'withdraw', amount: num })
       setAmount('')
       onNotice(`Withdrew $${num.toFixed(2)} AUSD to your wallet on Monad Testnet!`)
@@ -283,12 +344,9 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
       }
     } finally {
       setBusy(false)
+      setStepAction('')
     }
   }
-
-  const numAmount = Number(amount || 0)
-  const unitsAmount = Number.isFinite(numAmount) && numAmount > 0 ? parseUnits(numAmount.toFixed(6), 6) : 0n
-  const needsApproval = tab === 'deposit' && unitsAmount > 0n && allowance < unitsAmount
 
   const applyPercent = (pct: number) => {
     if (tab === 'deposit') {
@@ -347,10 +405,13 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
         }}>
           <div>
             <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: 0.5 }}>
-              Wallet Balance
+              Wallet Cash
             </div>
             <div style={{ fontSize: 16, fontWeight: 700, color: 'var(--text)', marginTop: 2 }}>
               ${walletAusd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <small style={{ fontSize: 11, color: 'var(--muted)' }}>AUSD</small>
+            </div>
+            <div style={{ fontSize: 11, color: walletMon < 0.005 ? '#f59e0b' : 'var(--muted)', marginTop: 2, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <Fuel size={11} /> {walletMon.toFixed(3)} MON gas
             </div>
           </div>
           <div>
@@ -359,6 +420,9 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
             </div>
             <div style={{ fontSize: 16, fontWeight: 700, color: '#10b981', marginTop: 2 }}>
               ${(vaultBalance?.availableBalance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} <small style={{ fontSize: 11, color: 'var(--muted)' }}>AUSD</small>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>
+              Total: ${(vaultBalance?.totalBalance ?? 0).toFixed(2)}
             </div>
           </div>
 
@@ -375,6 +439,34 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
             </div>
           </div>
         </div>
+
+        {/* Low Gas Warning Banner */}
+        {walletMon < 0.002 && (
+          <div style={{
+            background: 'rgba(245, 158, 11, 0.1)',
+            border: '1px solid rgba(245, 158, 11, 0.3)',
+            borderRadius: 12,
+            padding: '10px 14px',
+            marginBottom: 14,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 10
+          }}>
+            <div style={{ fontSize: 12, color: '#f59e0b', lineHeight: 1.4 }}>
+              <strong>Monad Gas Needed:</strong> You have {walletMon.toFixed(3)} MON. Transactions require a tiny bit of MON for gas.
+            </div>
+            <button
+              type="button"
+              className="faucet-claim-pill"
+              style={{ background: '#f59e0b', color: '#000', fontWeight: 600, flexShrink: 0 }}
+              disabled={claimingFaucet}
+              onClick={() => void claimFaucet()}
+            >
+              {claimingFaucet ? 'Claiming…' : '+ Claim Gas'}
+            </button>
+          </div>
+        )}
 
         {/* Success Alert */}
         {successTx && (
@@ -416,7 +508,7 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                   <span>Deposit Amount</span>
                   <span style={{ fontSize: 11, color: 'var(--muted)' }}>
-                    Max: ${walletAusd.toFixed(2)}
+                    Wallet: ${walletAusd.toFixed(2)} AUSD
                   </span>
                 </div>
                 <input
@@ -439,32 +531,33 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
               </label>
             </div>
 
-            {walletAusd === 0 && (
-              <div style={{
-                background: 'rgba(255, 255, 255, 0.04)',
-                border: '1px dashed var(--line)',
-                borderRadius: 12,
-                padding: '12px 14px',
-                margin: '12px 0',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: 12
-              }}>
-                <div style={{ fontSize: 12, color: 'var(--muted)' }}>
-                  Need testnet funds to deposit?
-                </div>
-                <button
-                  type="button"
-                  className="faucet-claim-pill"
-                  disabled={claimingFaucet}
-                  onClick={() => void claimFaucet()}
-                >
-                  {claimingFaucet ? 'Claiming…' : '+ Claim 500 AUSD'}
-                </button>
+            {/* Quick Faucet Callout */}
+            <div style={{
+              background: 'rgba(255, 255, 255, 0.03)',
+              border: '1px dashed var(--line)',
+              borderRadius: 12,
+              padding: '10px 14px',
+              margin: '12px 0',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12
+            }}>
+              <div style={{ fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                <Coins size={14} style={{ color: 'var(--accent)' }} />
+                <span>Need testnet AUSD or MON gas?</span>
               </div>
-            )}
+              <button
+                type="button"
+                className="faucet-claim-pill"
+                disabled={claimingFaucet}
+                onClick={() => void claimFaucet()}
+              >
+                {claimingFaucet ? 'Claiming…' : '+ Claim 500 AUSD & Gas'}
+              </button>
+            </div>
 
+            {/* Visual Step Tracker when Approval is needed */}
             {needsApproval && (
               <div style={{
                 background: 'rgba(255, 255, 255, 0.03)',
@@ -477,57 +570,85 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
                 gap: 8
               }}>
                 <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--muted)', letterSpacing: 0.5 }}>
-                  DEPOSIT FLOW (AUTOMATED 2-STEP)
+                  DEPOSIT STEPS
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
                   <div style={{
-                    width: 20, height: 20, borderRadius: '50%',
-                    background: allowance >= unitsAmount ? '#10b981' : depositStep === 'approving' ? '#3b82f6' : 'var(--line)',
-                    color: '#fff', display: 'grid', placeItems: 'center', fontSize: 10, fontWeight: 700
+                    width: 22, height: 22, borderRadius: '50%',
+                    background: stepAction === 'approving' ? '#3b82f6' : 'var(--accent)',
+                    color: '#fff', display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 700
                   }}>
-                    {allowance >= unitsAmount ? '✓' : '1'}
+                    1
                   </div>
-                  <span style={{ color: allowance >= unitsAmount ? '#10b981' : 'var(--text)', fontWeight: 600 }}>
-                    1. Approve AUSD for Vault {allowance >= unitsAmount ? '(Approved ✓)' : depositStep === 'approving' ? '(Signing…)' : ''}
+                  <span style={{ color: 'var(--text)', fontWeight: 600 }}>
+                    1. Approve AUSD for Vault {stepAction === 'approving' ? '(Signing in wallet…)' : ''}
                   </span>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12 }}>
                   <div style={{
-                    width: 20, height: 20, borderRadius: '50%',
-                    background: depositStep === 'depositing' || depositStep === 'syncing' ? '#10b981' : 'var(--line)',
-                    color: '#fff', display: 'grid', placeItems: 'center', fontSize: 10, fontWeight: 700
+                    width: 22, height: 22, borderRadius: '50%',
+                    background: 'var(--line)',
+                    color: 'var(--muted)', display: 'grid', placeItems: 'center', fontSize: 11, fontWeight: 700
                   }}>
                     2
                   </div>
-                  <span style={{ color: depositStep === 'depositing' ? '#10b981' : 'var(--muted)', fontWeight: 500 }}>
+                  <span style={{ color: 'var(--muted)', fontWeight: 500 }}>
                     2. Deposit ${numAmount > 0 ? numAmount.toFixed(2) : '0.00'} AUSD to Vault
                   </span>
                 </div>
               </div>
             )}
 
-            <div style={{ margin: '14px 0 8px', fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            {isApproved && unitsAmount > 0n && (
+              <div style={{
+                background: 'rgba(16, 185, 129, 0.08)',
+                border: '1px solid rgba(16, 185, 129, 0.25)',
+                borderRadius: 12,
+                padding: '8px 14px',
+                margin: '10px 0 14px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: 12,
+                color: '#10b981'
+              }}>
+                <Check size={14} />
+                <span>AUSD is approved for the vault. Ready to deposit!</span>
+              </div>
+            )}
+
+            <div style={{ margin: '14px 0 10px', fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
               <ShieldCheck size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />
               <span>Transfers real AUSD on Monad Testnet into your GentrY vault shares.</span>
             </div>
 
-            <button
-              type="submit"
-              className="primary-button wide"
-              disabled={busy || !Number(amount) || Number(amount) <= 0}
-            >
-              {busy ? (
-                depositStep === 'approving' ? (
-                  <><LoaderCircle className="spin" size={16} /> Step 1/2: Confirming AUSD approval in wallet…</>
-                ) : depositStep === 'depositing' ? (
-                  <><LoaderCircle className="spin" size={16} /> Step 2/2: Confirming deposit in wallet…</>
+            {/* Action Button: Decoupled to eliminate user-gesture timeout & popup blocks */}
+            {needsApproval ? (
+              <button
+                type="button"
+                className="primary-button wide"
+                disabled={busy || numAmount <= 0 || numAmount > walletAusd}
+                onClick={() => void handleApprove()}
+              >
+                {busy && stepAction === 'approving' ? (
+                  <><LoaderCircle className="spin" size={16} /> Confirming AUSD approval in wallet…</>
                 ) : (
-                  <><LoaderCircle className="spin" size={16} /> Finalizing on Monad Testnet…</>
-                )
-              ) : (
-                needsApproval ? 'Approve & Deposit AUSD to Vault' : 'Deposit AUSD to Vault'
-              )}
-            </button>
+                  '1. Approve AUSD for Vault'
+                )}
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="primary-button wide"
+                disabled={busy || numAmount <= 0 || numAmount > walletAusd}
+              >
+                {busy && stepAction === 'depositing' ? (
+                  <><LoaderCircle className="spin" size={16} /> Confirming deposit in wallet…</>
+                ) : (
+                  `Deposit ${numAmount > 0 ? '$' + numAmount.toFixed(2) : ''} AUSD to Vault`
+                )}
+              </button>
+            )}
           </form>
         )}
 
@@ -539,7 +660,7 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
                   <span>Withdraw Amount</span>
                   <span style={{ fontSize: 11, color: 'var(--muted)' }}>
-                    Available: ${(vaultBalance?.availableBalance ?? 0).toFixed(2)}
+                    Available: ${(vaultBalance?.availableBalance ?? 0).toFixed(2)} AUSD
                   </span>
                 </div>
                 <input
@@ -562,7 +683,7 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
               </label>
             </div>
 
-            <div style={{ margin: '16px 0 8px', fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+            <div style={{ margin: '16px 0 10px', fontSize: 12, color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
               <ShieldCheck size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} />
               <span>Settles directly on Monad Testnet to your connected personal wallet.</span>
             </div>
@@ -570,9 +691,13 @@ export function DepositWithdrawModal({ initialTab = 'deposit', walletAddress, on
             <button
               type="submit"
               className="primary-button wide"
-              disabled={busy || !Number(amount) || Number(amount) > (vaultBalance?.availableBalance ?? 0)}
+              disabled={busy || numAmount <= 0 || numAmount > (vaultBalance?.availableBalance ?? 0)}
             >
-              {busy ? <><LoaderCircle className="spin" size={16} /> Settling on Monad…</> : 'Sign & Withdraw AUSD'}
+              {busy && stepAction === 'withdrawing' ? (
+                <><LoaderCircle className="spin" size={16} /> Settling on Monad Testnet…</>
+              ) : (
+                'Sign & Withdraw AUSD'
+              )}
             </button>
           </form>
         )}

@@ -399,12 +399,14 @@ export default function App() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ address: walletAddress })
       })
+      const data = await res.json().catch(() => ({}))
       if (res.ok) {
-        setNotice('Claimed 500 AUSD from faucet directly to your wallet!')
+        setNotice(`Claimed ${data.amount || '500 AUSD'} from faucet directly to your wallet!`)
         void fetchWalletBalances()
+        setTimeout(() => void fetchWalletBalances(), 1200)
+        setTimeout(() => void fetchWalletBalances(), 3000)
       } else {
-        const err = await res.json()
-        setNotice(err.error || 'Faucet claim could not be completed.')
+        setNotice(data.error || 'Faucet claim could not be completed.')
       }
     } catch {
       setNotice('Faucet claim request failed.')
@@ -697,12 +699,14 @@ export default function App() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ address: targetAddr })
       })
+      const data = await res.json().catch(() => ({}))
       if (res.ok) {
-        setNotice('Claimed 500 test AUSD directly to your personal wallet on Monad Testnet!')
+        setNotice(`Claimed ${data.amount || '500 test AUSD'} directly to your personal wallet on Monad Testnet!`)
         void fetchWalletBalances()
+        setTimeout(() => void fetchWalletBalances(), 1200)
+        setTimeout(() => void fetchWalletBalances(), 3000)
       } else {
-        const err = await res.json().catch(() => ({}))
-        setNotice(err.error || 'Could not claim test tokens.')
+        setNotice(data.error || 'Could not claim test tokens.')
       }
     } catch {
       setNotice('Faucet claim request failed.')

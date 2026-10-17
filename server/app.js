@@ -5,7 +5,7 @@ import { createHash, createPrivateKey, randomBytes, sign as signEd25519 } from '
 import { ExactEvmScheme } from '@x402/evm/exact/server'
 import { HTTPFacilitatorClient, x402ResourceServer } from '@x402/core/server'
 import { paymentMiddleware } from '@x402/express'
-import { createPublicClient, createWalletClient, decodeEventLog, formatEther, formatUnits, getAddress, http, isAddress, parseAbi, parseUnits, verifyMessage } from 'viem'
+import { createPublicClient, createWalletClient, decodeEventLog, formatEther, formatUnits, getAddress, http, isAddress, parseAbi, parseEther, parseUnits, verifyMessage } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { fileURLToPath } from 'node:url'
 import fs from 'node:fs'
@@ -1071,9 +1071,27 @@ app.post('/api/vault/deposit', async (req, res) => {
     const cleanAddress = getAddress(rawAddress.toLowerCase())
     const cleanVault = getAddress(managedVaultAddress)
 
-    const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash })
-    if (receipt.status !== 'success') {
+    // Check if tx is already indexed or wait for receipt
+    let receipt = await publicClient.getTransactionReceipt({ hash: txHash }).catch(() => null)
+    if (!receipt) {
+      receipt = await publicClient.waitForTransactionReceipt({ hash: txHash })
+    }
+    if (receipt?.status !== 'success') {
       return res.status(400).json({ error: 'Deposit transaction did not succeed on Monad Testnet.' })
+    }
+
+    const acc = getUserAccount(cleanAddress)
+
+    // Check idempotency: if this txHash was already credited, just return current balance
+    const alreadyLogged = acc.history?.some((h) => h.txHash?.toLowerCase() === txHash.toLowerCase())
+    if (alreadyLogged) {
+      const bal = await getUserVaultBalanceWithOnchain(cleanAddress)
+      return res.json({
+        success: true,
+        deposited: acc.deposited,
+        balance: bal,
+        transaction: txHash
+      })
     }
 
     // Decode Deposit event from receipt logs
@@ -1110,7 +1128,6 @@ app.post('/api/vault/deposit', async (req, res) => {
 
     const explicitAmount = Number(req.body?.amount)
     const validAmount = Number.isFinite(explicitAmount) && explicitAmount > 0 ? explicitAmount : 0
-    const acc = getUserAccount(cleanAddress)
     const effectiveDeposit = eventAssets > 0 ? eventAssets : validAmount
     const depositDelta = effectiveDeposit > 0 ? effectiveDeposit : (sharesAmount > (acc.deposited || 0) ? (sharesAmount - (acc.deposited || 0)) : 0)
     const targetDeposited = Math.max(sharesAmount, Number(((acc.deposited || 0) + depositDelta).toFixed(4)))
@@ -1276,14 +1293,47 @@ app.post('/api/faucet/claim', async (req, res) => {
     const cleanFaucet = getAddress(faucet)
     const faucetAbi = parseAbi(['function requestFunds(address)'])
     const wallet = managedVaultWallet()
-    const hash = await wallet.writeContract({
-      address: cleanFaucet,
-      abi: faucetAbi,
-      functionName: 'requestFunds',
-      args: [cleanAddress]
+
+    // 1. Request 500 AUSD test funds
+    let ausdHash = null
+    try {
+      ausdHash = await wallet.writeContract({
+        address: cleanFaucet,
+        abi: faucetAbi,
+        functionName: 'requestFunds',
+        args: [cleanAddress]
+      })
+      await publicClient.waitForTransactionReceipt({ hash: ausdHash })
+    } catch (faucetErr) {
+      console.warn('Faucet requestFunds note:', faucetErr?.message)
+    }
+
+    // 2. Also drip native MON gas if user has less than 0.02 MON
+    let monDripped = false
+    let monHash = null
+    try {
+      const userMonBal = await publicClient.getBalance({ address: cleanAddress }).catch(() => 0n)
+      if (userMonBal < parseEther('0.02')) {
+        monHash = await wallet.sendTransaction({
+          to: cleanAddress,
+          value: parseEther('0.04')
+        })
+        await publicClient.waitForTransactionReceipt({ hash: monHash })
+        monDripped = true
+      }
+    } catch (monErr) {
+      console.warn('MON gas drip note:', monErr?.message)
+    }
+
+    if (!ausdHash && !monDripped) {
+      return res.status(429).json({ error: 'Faucet request was recently completed. Please wait a moment before claiming again.' })
+    }
+
+    res.json({
+      success: true,
+      transaction: ausdHash || monHash,
+      amount: ausdHash ? (monDripped ? '500 AUSD + 0.04 MON' : '500 AUSD') : '0.04 MON gas'
     })
-    await publicClient.waitForTransactionReceipt({ hash })
-    res.json({ success: true, transaction: hash, amount: '500 AUSD' })
   } catch (err) {
     console.error('Faucet claim error:', err)
     res.status(500).json({ error: 'Faucet request could not be completed.' })
